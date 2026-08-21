@@ -23,14 +23,15 @@ func Execute() {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:     "asr-text-extractor",
-		Short:   "Unpack, translate, and repack Asura Engine string tables",
+		Short:   "Unpack, translate, and repack Asura Engine game assets",
 		Version: version,
 		Long: `asr-text-extractor reads and writes the "Asura" container format used by
 Rebellion's Asura Engine titles (Sniper Elite 4, Zombie Army 4, and others).
 
-It handles two chunk types:
-  text  - HTXT chunks: menu/UI strings, one table per file
-  voice - DLLN chunks: voice line strings, many entries per file`,
+It handles these chunk types:
+  text  - HTXT chunks: menu/UI strings, one table per file (translate + repack)
+  voice - DLLN chunks: voice line strings, many entries per file (translate + repack)
+  sound - ASTS chunks: embedded WAV assets in a streamsounds manifest (extract only)`,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
@@ -40,6 +41,7 @@ It handles two chunk types:
 		"interchange text encoding: utf8 or utf16le (default: utf16le for txt, utf8 otherwise)")
 	root.AddCommand(newTextCmd())
 	root.AddCommand(newVoiceCmd())
+	root.AddCommand(newSoundCmd())
 	return root
 }
 

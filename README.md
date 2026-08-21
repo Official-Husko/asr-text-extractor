@@ -6,12 +6,15 @@ titles such as Sniper Elite 5 and Sniper Elite Resistance.
 
 It reads and writes the `"Asura   "`-signed container format's chunk types:
 
-- **`text`** — `HTXT` chunks: a single menu/UI string table per file (e.g. `Menu.asr_en`)
-- **`voice`** — `DLLN` chunks: many voice-line entries per file (e.g. `MP.pc_en`)
+- **`text`** — `HTXT` chunks: a single menu/UI string table per file (e.g. `Menu.asr_en`) —
+  unpack, translate, and repack
+- **`voice`** — `DLLN` chunks: many voice-line entries per file (e.g. `MP.pc_en`) — unpack,
+  translate, and repack
+- **`sound`** — `ASTS` chunks: embedded WAV assets in a `.streamsounds` manifest — extract only
 
-Texture, model, and sound unpacking are planned but not yet implemented — the container/chunk
-reader (`pkg/asura`) is built to be extended with new chunk types as those formats are
-reverse-engineered. Recompiling/repacking beyond text overrides is also planned (phase 2).
+Texture and model unpacking are planned but not yet implemented — the container/chunk reader
+(`pkg/asura`) is built to be extended with new chunk types as those formats are
+reverse-engineered. Recompiling/repacking beyond text/voice overrides is also planned (phase 2).
 
 ## Quick start
 
