@@ -1,0 +1,10 @@
+# Build output
+/asr-text-extractor
+/dist/
+
+# Game sample/asset files used for local testing — copyrighted game data, don't commit.
+*.asr_*
+*.pc_*
+
+# ImHex scratch exports (pattern/report/array dumps of sample files above)
+/examples/
