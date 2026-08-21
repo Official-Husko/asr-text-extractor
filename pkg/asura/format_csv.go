@@ -6,10 +6,11 @@ import (
 	"strings"
 )
 
-var csvHeader = []string{"command", "source", "override"}
+var csvHeader = []string{"command", "name", "source", "override"}
 
 // encodeCSV renders records as a proper RFC 4180 CSV (comma-separated, quoted as needed)
-// with a header row.
+// with a header row. name is written as an empty field when unset (e.g. always, for voice
+// entries — no symbol-name table has been found for those).
 func encodeCSV(records []Record) (string, error) {
 	var b strings.Builder
 	w := csv.NewWriter(&b)
@@ -17,7 +18,7 @@ func encodeCSV(records []Record) (string, error) {
 		return "", err
 	}
 	for _, r := range records {
-		if err := w.Write([]string{r.Command, r.SourceText, r.OverrideText}); err != nil {
+		if err := w.Write([]string{r.Command, r.Name, r.SourceText, r.OverrideText}); err != nil {
 			return "", err
 		}
 	}
@@ -29,10 +30,10 @@ func encodeCSV(records []Record) (string, error) {
 }
 
 // decodeCSV parses a CSV written by encodeCSV (or a compatible hand-edited file with a
-// command,source,override header).
+// command,name,source,override header).
 func decodeCSV(text string) ([]Record, error) {
 	r := csv.NewReader(strings.NewReader(text))
-	r.FieldsPerRecord = 3
+	r.FieldsPerRecord = 4
 	rows, err := r.ReadAll()
 	if err != nil {
 		return nil, fmt.Errorf("asura: invalid CSV: %w", err)
@@ -44,7 +45,7 @@ func decodeCSV(text string) ([]Record, error) {
 
 	records := make([]Record, len(rows))
 	for i, row := range rows {
-		records[i] = Record{Command: row[0], SourceText: row[1], OverrideText: row[2]}
+		records[i] = Record{Command: row[0], Name: row[1], SourceText: row[2], OverrideText: row[3]}
 	}
 	return records, nil
 }

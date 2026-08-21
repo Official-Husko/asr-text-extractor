@@ -2,6 +2,7 @@ package asura
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 )
 
@@ -21,6 +22,52 @@ type HTXTFile struct {
 	LanguageID uint32
 	Entries    []TextEntry
 	Trailing   []byte
+
+	// SymbolTableName and SymbolNames are parsed from Trailing on a best-effort basis (see
+	// parseSymbolNames) — an optional secondary table some HTXT files append after their
+	// string table, giving each entry's internal/build-time identifier (e.g. hash
+	// 1493970712 -> "1_OF_2"). SymbolNames is parallel to Entries (same index, same order)
+	// when non-nil; nil if Trailing didn't parse as this shape. This is informational only:
+	// it never affects Encode, which always replays Trailing verbatim regardless of whether
+	// parsing succeeded, so a misunderstood or absent symbol table can never corrupt output.
+	SymbolTableName string
+	SymbolNames     []string
+}
+
+// parseSymbolNames attempts to interpret trailing as the optional secondary symbol-name
+// table: a NUL-terminated ASCII table name (zero-padded so the following fields starts on a
+// 4-byte boundary), a uint32 byte length, that many bytes of NUL-separated ASCII names (one
+// per string-table entry, in the same order), and a 4-byte zero footer. Returns ok=false if
+// trailing doesn't look like this shape at all (e.g. the parsed string count doesn't match
+// wantCount) — callers must treat that as "no symbol table", not an error.
+func parseSymbolNames(trailing []byte, wantCount int) (tableName string, names []string, ok bool) {
+	nameEnd := bytes.IndexByte(trailing, 0)
+	if nameEnd < 0 {
+		return "", nil, false
+	}
+	headerLen := nameEnd + 1
+	headerLen += (4 - headerLen%4) % 4 // pad to the next 4-byte boundary
+	if headerLen+4 > len(trailing) {
+		return "", nil, false
+	}
+	size := int(binary.LittleEndian.Uint32(trailing[headerLen:]))
+	bodyStart := headerLen + 4
+	if size < 0 || bodyStart+size > len(trailing) {
+		return "", nil, false
+	}
+	body := trailing[bodyStart : bodyStart+size]
+	if len(body) == 0 || body[len(body)-1] != 0 {
+		return "", nil, false
+	}
+	parts := bytes.Split(body[:len(body)-1], []byte{0})
+	if len(parts) != wantCount {
+		return "", nil, false
+	}
+	names = make([]string, len(parts))
+	for i, p := range parts {
+		names[i] = string(p)
+	}
+	return string(trailing[:nameEnd]), names, true
 }
 
 // ParseHTXT decodes a single HTXT chunk from data, which must start with the 8-byte Asura
@@ -62,6 +109,10 @@ func ParseHTXT(data []byte) (*HTXTFile, error) {
 		f.Entries = append(f.Entries, TextEntry{Hash: hash, Data: append([]byte(nil), data...)})
 	}
 	f.Trailing = append([]byte(nil), r.data[r.pos:]...)
+	if name, names, ok := parseSymbolNames(f.Trailing, len(f.Entries)); ok {
+		f.SymbolTableName = name
+		f.SymbolNames = names
+	}
 	return f, nil
 }
 

@@ -26,8 +26,12 @@ func htxtRecords(f *asura.HTXTFile) (order []uint32, records map[uint32]asura.Re
 	order = make([]uint32, 0, len(f.Entries))
 	seen := make(map[uint32]bool, len(f.Entries))
 	records = make(map[uint32]asura.Record, len(f.Entries))
-	for _, e := range f.Entries {
-		text := DecodeTextEntry(e)
+	for i, e := range f.Entries {
+		var name string
+		if i < len(f.SymbolNames) {
+			name = f.SymbolNames[i]
+		}
+		text := decodeTextEntry(e, name)
 		if !seen[e.Hash] {
 			seen[e.Hash] = true
 			order = append(order, e.Hash)
@@ -37,12 +41,13 @@ func htxtRecords(f *asura.HTXTFile) (order []uint32, records map[uint32]asura.Re
 	return order, records
 }
 
-// DecodeTextEntry renders a single HTXT entry as a Record (command = decimal hash, source =
-// override = its decoded text, until a translation overrides it).
-func DecodeTextEntry(e asura.TextEntry) asura.Record {
+// decodeTextEntry renders a single HTXT entry as a Record (command = decimal hash, source =
+// override = its decoded text until a translation overrides it, name = its symbol-table
+// identifier if the source file had one).
+func decodeTextEntry(e asura.TextEntry, name string) asura.Record {
 	text := asura.DecodeText(e.Data)
 	command := fmt.Sprint(e.Hash)
-	return asura.Record{Command: command, SourceText: text, OverrideText: text}
+	return asura.Record{Command: command, Name: name, SourceText: text, OverrideText: text}
 }
 
 func newTextUnpackCmd() *cobra.Command {
@@ -181,7 +186,7 @@ func newTextCompareCmd() *cobra.Command {
 				if recB, ok := valuesB[h]; ok {
 					other = recB.SourceText
 				}
-				records[i] = asura.Record{Command: recA.Command, SourceText: recA.SourceText, OverrideText: other}
+				records[i] = asura.Record{Command: recA.Command, Name: recA.Name, SourceText: recA.SourceText, OverrideText: other}
 			}
 			if err := asura.WriteRecords(out, records, format, encoding); err != nil {
 				return err

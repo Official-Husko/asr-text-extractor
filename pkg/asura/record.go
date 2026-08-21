@@ -10,8 +10,15 @@ import (
 // Record is one interchange entry, format-agnostic: for HTXT (text) tables Command is the
 // decimal string-table hash; for DLLN (voice) entries it's the ASCII command name. If
 // OverrideText equals SourceText, the entry hasn't been translated yet.
+//
+// Name is an optional, read-only, human-readable identifier for Command (e.g. HTXT's
+// symbol-name table gives hash 1493970712 the name "1_OF_2") — purely informational context,
+// empty when unknown (always, for voice/DLLN entries; no equivalent table has been found for
+// those yet). It's never consulted for matching or overriding, and never round-trips back
+// into the binary file.
 type Record struct {
 	Command      string
+	Name         string
 	SourceText   string
 	OverrideText string
 }

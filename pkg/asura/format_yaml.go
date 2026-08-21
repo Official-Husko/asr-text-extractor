@@ -8,15 +8,18 @@ import (
 
 type yamlRecord struct {
 	Command  string `yaml:"command"`
+	Name     string `yaml:"name,omitempty"`
 	Source   string `yaml:"source"`
 	Override string `yaml:"override"`
 }
 
-// encodeYAML renders records as an ordered YAML sequence of the same shape as JSON.
+// encodeYAML renders records as an ordered YAML sequence of the same shape as JSON. name is
+// omitted when empty (e.g. always, for voice entries — no symbol-name table has been found
+// for those).
 func encodeYAML(records []Record) (string, error) {
 	out := make([]yamlRecord, len(records))
 	for i, r := range records {
-		out[i] = yamlRecord{Command: r.Command, Source: r.SourceText, Override: r.OverrideText}
+		out[i] = yamlRecord{Command: r.Command, Name: r.Name, Source: r.SourceText, Override: r.OverrideText}
 	}
 	b, err := yaml.Marshal(out)
 	if err != nil {
@@ -32,7 +35,7 @@ func decodeYAML(text string) ([]Record, error) {
 	}
 	records := make([]Record, len(in))
 	for i, r := range in {
-		records[i] = Record{Command: r.Command, SourceText: r.Source, OverrideText: r.Override}
+		records[i] = Record{Command: r.Command, Name: r.Name, SourceText: r.Source, OverrideText: r.Override}
 	}
 	return records, nil
 }

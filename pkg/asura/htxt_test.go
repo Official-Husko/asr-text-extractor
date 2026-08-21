@@ -1,6 +1,9 @@
 package asura
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestHTXTRoundTrip(t *testing.T) {
 	f := &HTXTFile{
@@ -82,5 +85,101 @@ func TestHTXTOverride(t *testing.T) {
 func TestParseHTXTBadMagic(t *testing.T) {
 	if _, err := ParseHTXT([]byte("not an asura file")); err != ErrBadMagic {
 		t.Fatalf("expected ErrBadMagic, got %v", err)
+	}
+}
+
+// buildSymbolTable constructs the trailing bytes for the optional secondary symbol-name
+// table in the shape confirmed against a real Zombie Army 4 menu.asr_en: a NUL-terminated
+// ASCII table name padded to the next 4-byte boundary, a uint32 body length, that many bytes
+// of NUL-separated names, and a 4-byte zero footer.
+func buildSymbolTable(tableName string, names []string) []byte {
+	var body bytes.Buffer
+	for _, n := range names {
+		body.WriteString(n)
+		body.WriteByte(0)
+	}
+
+	var buf bytes.Buffer
+	buf.WriteString(tableName)
+	buf.WriteByte(0)
+	headerLen := len(tableName) + 1
+	for pad := (4 - headerLen%4) % 4; pad > 0; pad-- {
+		buf.WriteByte(0)
+	}
+	writeU32(&buf, uint32(body.Len()))
+	buf.Write(body.Bytes())
+	buf.Write(make([]byte, 4)) // footer
+	return buf.Bytes()
+}
+
+func TestParseSymbolNames(t *testing.T) {
+	f := &HTXTFile{
+		Entries: []TextEntry{
+			{Hash: 1493970712, Data: EncodeText("1 of 2<END>")},
+			{Hash: 1522599863, Data: EncodeText("2 of 2<END>")},
+		},
+		Trailing: buildSymbolTable("MENU", []string{"1_OF_2", "2_OF_2"}),
+	}
+	original := f.Encode()
+
+	got, err := ParseHTXT(original)
+	if err != nil {
+		t.Fatalf("ParseHTXT: %v", err)
+	}
+	if got.SymbolTableName != "MENU" {
+		t.Errorf("SymbolTableName = %q, want %q", got.SymbolTableName, "MENU")
+	}
+	wantNames := []string{"1_OF_2", "2_OF_2"}
+	if len(got.SymbolNames) != len(wantNames) {
+		t.Fatalf("SymbolNames = %v, want %v", got.SymbolNames, wantNames)
+	}
+	for i := range wantNames {
+		if got.SymbolNames[i] != wantNames[i] {
+			t.Errorf("SymbolNames[%d] = %q, want %q", i, got.SymbolNames[i], wantNames[i])
+		}
+	}
+
+	// Symbol-table parsing must never affect re-encoding: Trailing is always the source of
+	// truth, replayed verbatim regardless of whether it was understood.
+	if reEncoded := got.Encode(); string(reEncoded) != string(original) {
+		t.Errorf("re-encode not byte-identical after symbol-table parsing")
+	}
+}
+
+func TestParseSymbolNamesMismatchedCountIsIgnored(t *testing.T) {
+	f := &HTXTFile{
+		Entries: []TextEntry{
+			{Hash: 1, Data: EncodeText("one")},
+			{Hash: 2, Data: EncodeText("two")},
+		},
+		// Only one name for two entries: the shape doesn't match, so parsing should quietly
+		// decline rather than guess or error.
+		Trailing: buildSymbolTable("MENU", []string{"only_one"}),
+	}
+	original := f.Encode()
+
+	got, err := ParseHTXT(original)
+	if err != nil {
+		t.Fatalf("ParseHTXT: %v", err)
+	}
+	if got.SymbolNames != nil {
+		t.Errorf("expected no SymbolNames on a count mismatch, got %v", got.SymbolNames)
+	}
+	if reEncoded := got.Encode(); string(reEncoded) != string(original) {
+		t.Errorf("re-encode not byte-identical")
+	}
+}
+
+func TestParseSymbolNamesNoTrailingData(t *testing.T) {
+	f := &HTXTFile{
+		Entries: []TextEntry{{Hash: 1, Data: EncodeText("one")}},
+		// No Trailing at all: plenty of real files won't have this optional table.
+	}
+	got, err := ParseHTXT(f.Encode())
+	if err != nil {
+		t.Fatalf("ParseHTXT: %v", err)
+	}
+	if got.SymbolNames != nil || got.SymbolTableName != "" {
+		t.Errorf("expected no symbol table, got name=%q names=%v", got.SymbolTableName, got.SymbolNames)
 	}
 }

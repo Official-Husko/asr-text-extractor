@@ -17,6 +17,7 @@ type xmlCommand struct {
 
 type xmlRecord struct {
 	Command  xmlCommand `xml:"command"`
+	Name     string     `xml:"name,omitempty"`
 	Source   string     `xml:"source"`
 	Override string     `xml:"override"`
 }
@@ -34,7 +35,7 @@ func encodeXML(records []Record, enc Encoding) (string, error) {
 			cmd.Hex = true
 			cmd.Value = hex.EncodeToString([]byte(r.Command))
 		}
-		doc.Records[i] = xmlRecord{Command: cmd, Source: r.SourceText, Override: r.OverrideText}
+		doc.Records[i] = xmlRecord{Command: cmd, Name: r.Name, Source: r.SourceText, Override: r.OverrideText}
 	}
 
 	b, err := xml.MarshalIndent(doc, "", "  ")
@@ -64,7 +65,7 @@ func decodeXML(text string) ([]Record, error) {
 			}
 			command = string(b)
 		}
-		records[i] = Record{Command: command, SourceText: r.Source, OverrideText: r.Override}
+		records[i] = Record{Command: command, Name: r.Name, SourceText: r.Source, OverrideText: r.Override}
 	}
 	return records, nil
 }
