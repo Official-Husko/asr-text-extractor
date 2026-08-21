@@ -10,10 +10,11 @@ a short pointer; this is where the actual detail lives.
   interchange system (JSON, YAML, XML, CSV, txt).
 - [Sound Extraction](Sound-Extraction.md) — extracting embedded WAV assets from `ASTS`
   streamsounds manifests (extract-only, no repacking yet).
+- [Texture Extraction](Texture-Extraction.md) — extracting embedded DDS textures from `RSCF`
+  archives (extract-only, no repacking yet).
 
 ## Planned (not yet implemented)
 
-- Texture extraction
 - Model extraction
 - A second, smaller sound chunk type (`FNFO`) seen in a sample `gmsnd.asr_wav_en` file —
   not yet reverse-engineered (see [Sound Extraction](Sound-Extraction.md#known-limitations))

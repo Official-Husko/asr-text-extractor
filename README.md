@@ -11,10 +11,11 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
 - **`voice`** — `DLLN` chunks: many voice-line entries per file (e.g. `MP.pc_en`) — unpack,
   translate, and repack
 - **`sound`** — `ASTS` chunks: embedded WAV assets in a `.streamsounds` manifest — extract only
+- **`texture`** — `RSCF` chunks: embedded DDS textures in a `.pc_textures` archive — extract only
 
-Texture and model unpacking are planned but not yet implemented — the container/chunk reader
-(`pkg/asura`) is built to be extended with new chunk types as those formats are
-reverse-engineered. Recompiling/repacking beyond text/voice overrides is also planned (phase 2).
+Model unpacking is planned but not yet implemented — the container/chunk reader (`pkg/asura`)
+is built to be extended with new chunk types as those formats are reverse-engineered.
+Recompiling/repacking beyond text/voice overrides is also planned (phase 2).
 
 ## Quick start
 
