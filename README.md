@@ -1,6 +1,6 @@
 # asr-text-extractor
 
-A cross-platform Go tool for unpacking, translating, and repacking the text data in Rebellion's
+A cross-platform Go tool for unpacking, translating, and repacking data in Rebellion's
 **Asura Engine** games — Sniper Elite 4, Zombie Army 4, and (in progress) other Asura-engine
 titles such as Sniper Elite 5 and Sniper Elite Resistance.
 
@@ -11,32 +11,29 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
 
 Texture, model, and sound unpacking are planned but not yet implemented — the container/chunk
 reader (`pkg/asura`) is built to be extended with new chunk types as those formats are
-reverse-engineered.
+reverse-engineered. Recompiling/repacking beyond text overrides is also planned (phase 2).
 
-## Usage
+## Quick start
 
-```text
-asr-text-extractor text unpack    <file> [csv]
-asr-text-extractor text override  <file> <csv> [outfile] [--force]
-asr-text-extractor text compare   <fileA> <fileB> [csv]
+```sh
+go build -o asr-text-extractor ./cmd/asr-text-extractor
 
-asr-text-extractor voice unpack   <file> [csv]
-asr-text-extractor voice override <file> <csv> [outfile]
+./asr-text-extractor text unpack Menu.asr_en           # -> Menu.json
+# ...edit the "override" field of the entries you want to translate...
+./asr-text-extractor text override Menu.asr_en Menu.json
 ```
 
-- `unpack` extracts strings to a tab-separated, UTF-16LE CSV for translation.
-- `override` writes a CSV's translated strings back into a copy of the binary file. Without an
-  explicit output path it edits in place and keeps a `<file>_back` backup of the original.
-- `compare` builds a source/override table across two language files of the same asset.
-
-Gamepad button glyphs and control characters in unpacked text appear as `<TAG>` placeholders
-(e.g. `<INPUT_FRONTEND_A>`, `<NL>`) — edit around them, don't remove them.
+Output defaults to JSON; `--format` also accepts `yaml`, `xml`, `csv`, and the original tool's
+tab-separated `txt`. See the **[wiki](wiki/Home.md)** for the full command reference, the
+interchange format details, and the `<TAG>` placeholder reference.
 
 ## Building
 
 ```sh
 go build ./cmd/asr-text-extractor
 ```
+
+Run `go test ./...` to run the test suite.
 
 ## Credit
 

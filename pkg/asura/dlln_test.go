@@ -94,7 +94,7 @@ func TestOverrideVoiceV4(t *testing.T) {
 	buf.Write(buildDLLNEntry(command, testOpaque(), "hello voice line"))
 	buf.Write([]byte{0x99, 0x98}) // trailing bytes after the last entry
 
-	overrides := map[string]CSVRecord{
+	overrides := map[string]Record{
 		"CMD\x00": {Command: "CMD\x00", SourceText: "hello voice line", OverrideText: "TRANSLATED"},
 	}
 	out, err := OverrideVoice(buf.Bytes(), overrides, true)
@@ -126,7 +126,7 @@ func TestOverrideVoiceRejectsNonV4(t *testing.T) {
 	buf.Write(command)
 	buf.Write(testOpaque())
 
-	if _, err := OverrideVoice(buf.Bytes(), map[string]CSVRecord{}, true); err == nil {
+	if _, err := OverrideVoice(buf.Bytes(), map[string]Record{}, true); err == nil {
 		t.Fatal("expected an error for a non-Version-4 entry")
 	}
 }

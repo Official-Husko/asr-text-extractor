@@ -11,20 +11,12 @@ const (
 	voiceOverrideLangID = 7
 )
 
-// VoiceEntry is a single decoded DLLN entry: its command name plus whatever source/override
-// display text UnpackVoice could extract from it. Version 5 entries carry both (looked up by
-// the source/override language ids above); Version 4 entries carry one string used as both;
-// any other version yields an entry with empty text (the format for that version isn't
-// understood, but the entry is still surfaced since its command name and framing are known).
-type VoiceEntry struct {
-	Version      uint32
-	Command      string // ASCII, including the original null-byte padding
-	SourceText   string
-	OverrideText string
-}
-
 // UnpackVoice scans data (which must start with the Asura magic) for DLLN chunks and decodes
-// each one's command name plus its source/override display text.
+// each one's command name plus its source/override display text into a Record. Version 5
+// entries carry both source and override text (looked up by the language ids above); Version
+// 4 entries carry one string used as both; any other version yields a Record with empty text
+// (the format for that version isn't understood, but the entry is still surfaced since its
+// command name and framing are known).
 //
 // The scan is deliberately a byte-by-byte search for the next literal "DLLN" tag rather than
 // a walk over a chunk directory: that's how the original reverse-engineered tool works. Voice
@@ -32,13 +24,13 @@ type VoiceEntry struct {
 // version this tool doesn't know how to parse (anything but 4 or 5) are skipped with empty
 // text rather than aborting — the scan just resumes searching for the next "DLLN" tag, which
 // is what keeps it resynchronized regardless of any given entry's internal layout.
-func UnpackVoice(data []byte) ([]VoiceEntry, error) {
+func UnpackVoice(data []byte) ([]Record, error) {
 	if !CheckMagic(data) {
 		return nil, ErrBadMagic
 	}
 	r := &reader{data: data, pos: 8}
 
-	var entries []VoiceEntry
+	var entries []Record
 	for findNextDLLN(r) {
 		_ = r.u32() // Filesize: informational only, never used to seek
 		version := r.u32()
@@ -46,7 +38,7 @@ func UnpackVoice(data []byte) ([]VoiceEntry, error) {
 		command := scanCommand(r)
 		r.bytes(25) // opaque code1/code2/timestamp1/pad/timestamp2/skip4/command2 blob
 
-		entry := VoiceEntry{Version: version, Command: string(command)}
+		entry := Record{Command: string(command)}
 		switch version {
 		case 5:
 			num := r.u32()
@@ -82,7 +74,7 @@ func UnpackVoice(data []byte) ([]VoiceEntry, error) {
 // Mirroring the original tool, every DLLN entry in data must be Version 4 — hitting any other
 // version aborts the whole operation, since only Version 4's single-string layout is
 // understood well enough to safely rewrite.
-func OverrideVoice(data []byte, overrides map[string]CSVRecord, force bool) ([]byte, error) {
+func OverrideVoice(data []byte, overrides map[string]Record, force bool) ([]byte, error) {
 	if !CheckMagic(data) {
 		return nil, ErrBadMagic
 	}

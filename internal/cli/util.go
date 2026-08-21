@@ -5,12 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Official-Husko/asr-text-extractor/pkg/asura"
 )
 
-// defaultCSVPath mirrors the original tool's Path.GetFileNameWithoutExtension(path) + ".csv".
-func defaultCSVPath(path string) string {
+// defaultOutputPath mirrors the original tool's Path.GetFileNameWithoutExtension(path), but
+// with the chosen interchange format's own extension instead of always ".csv".
+func defaultOutputPath(path string, format asura.Format) string {
 	base := filepath.Base(path)
-	return strings.TrimSuffix(base, filepath.Ext(base)) + ".csv"
+	return strings.TrimSuffix(base, filepath.Ext(base)) + "." + string(format)
 }
 
 // backupPath returns path with "_back" appended, matching the original tool's in-place

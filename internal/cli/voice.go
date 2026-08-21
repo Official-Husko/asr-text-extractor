@@ -20,12 +20,16 @@ func newVoiceCmd() *cobra.Command {
 
 func newVoiceUnpackCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unpack <file> [csv]",
-		Short: "Unpack a voice file's DLLN entries to a tab-separated CSV",
+		Use:   "unpack <file> [output]",
+		Short: "Unpack a voice file's DLLN entries to an interchange file",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, encoding, err := formatAndEncoding(cmd)
+			if err != nil {
+				return err
+			}
 			path := args[0]
-			out := defaultCSVPath(path)
+			out := defaultOutputPath(path, format)
 			if len(args) == 2 {
 				out = args[1]
 			}
@@ -34,20 +38,15 @@ func newVoiceUnpackCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			entries, err := asura.UnpackVoice(data)
+			records, err := asura.UnpackVoice(data)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
 
-			lines := make([]string, len(entries))
-			for i, e := range entries {
-				rec := asura.CSVRecord{Command: e.Command, SourceText: e.SourceText, OverrideText: e.OverrideText}
-				lines[i] = rec.Line()
-			}
-			if err := asura.WriteUTF16LELines(out, lines); err != nil {
+			if err := asura.WriteRecords(out, records, format, encoding); err != nil {
 				return err
 			}
-			fmt.Fprintf(os.Stderr, "wrote %s (%d entries)\n", out, len(entries))
+			fmt.Fprintf(os.Stderr, "wrote %s (%d entries)\n", out, len(records))
 			return nil
 		},
 	}
@@ -55,11 +54,15 @@ func newVoiceUnpackCmd() *cobra.Command {
 
 func newVoiceOverrideCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "override <file> <csv> [outfile]",
-		Short: "Write translated strings from a CSV back into a voice file (Version 4 DLLN entries only)",
+		Use:   "override <file> <data> [outfile]",
+		Short: "Write translated strings from an interchange file back into a voice file (Version 4 DLLN entries only)",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path, csvPath := args[0], args[1]
+			format, encoding, err := formatAndEncoding(cmd)
+			if err != nil {
+				return err
+			}
+			path, dataPath := args[0], args[1]
 			out := path
 			explicit := len(args) == 3
 			if explicit {
@@ -69,16 +72,12 @@ func newVoiceOverrideCmd() *cobra.Command {
 				return err
 			}
 
-			lines, err := asura.ReadUTF16LELines(csvPath)
+			recs, err := asura.ReadRecords(dataPath, format, encoding)
 			if err != nil {
 				return err
 			}
-			overrides := make(map[string]asura.CSVRecord, len(lines))
-			for _, line := range lines {
-				rec, err := asura.ParseCSVRecord(line)
-				if err != nil {
-					return err
-				}
+			overrides := make(map[string]asura.Record, len(recs))
+			for _, rec := range recs {
 				overrides[rec.Command] = rec
 			}
 
@@ -87,8 +86,8 @@ func newVoiceOverrideCmd() *cobra.Command {
 				return err
 			}
 			// The original tool always force-applies voice overrides: it never guards on
-			// the entry's current text matching the CSV's recorded source text the way
-			// text overrides do.
+			// the entry's current text matching the recorded source text the way text
+			// overrides do.
 			result, err := asura.OverrideVoice(data, overrides, true)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)

@@ -67,8 +67,8 @@ func ParseHTXT(data []byte) (*HTXTFile, error) {
 
 // Override rewrites entries whose hash matches a key in overrides. An entry is only
 // rewritten if its current decoded text equals the CSV's recorded source text, unless force
-// is set — this guards against silently applying a stale or mismatched translation CSV.
-func (f *HTXTFile) Override(overrides map[uint32]CSVRecord, force bool) {
+// is set — this guards against silently applying a stale or mismatched translation table.
+func (f *HTXTFile) Override(overrides map[uint32]Record, force bool) {
 	for i, e := range f.Entries {
 		rec, ok := overrides[e.Hash]
 		if !ok {

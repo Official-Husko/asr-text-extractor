@@ -52,7 +52,7 @@ func TestHTXTOverride(t *testing.T) {
 	}
 
 	// Mismatched source text without force: guard blocks the override.
-	f.Override(map[uint32]CSVRecord{
+	f.Override(map[uint32]Record{
 		1: {Command: "1", SourceText: "WRONG", OverrideText: "SHOULD_NOT_APPLY"},
 	}, false)
 	if DecodeText(f.Entries[0].Data) != "one" {
@@ -60,7 +60,7 @@ func TestHTXTOverride(t *testing.T) {
 	}
 
 	// Matching source text: applies.
-	f.Override(map[uint32]CSVRecord{
+	f.Override(map[uint32]Record{
 		1: {Command: "1", SourceText: "one", OverrideText: "ONE_TRANSLATED"},
 	}, false)
 	if DecodeText(f.Entries[0].Data) != "ONE_TRANSLATED" {
@@ -71,7 +71,7 @@ func TestHTXTOverride(t *testing.T) {
 	}
 
 	// force=true applies even with mismatched source text.
-	f.Override(map[uint32]CSVRecord{
+	f.Override(map[uint32]Record{
 		2: {Command: "2", SourceText: "WRONG", OverrideText: "TWO_FORCED"},
 	}, true)
 	if DecodeText(f.Entries[1].Data) != "TWO_FORCED" {

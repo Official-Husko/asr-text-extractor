@@ -10,6 +10,12 @@ import (
 // sequence it stands in for (gamepad button glyphs, and a few control characters and
 // multi-codepoint "highlight" control sequences from the private-use area).
 //
+// HIGHLIGHT2_START/HIGHLIGHT2_END are a second, independently-discovered highlight-span
+// marker pair the original C# tool never documented. Unlike the HIGHLIGHT_* entries above,
+// this pair always wraps a span of real content (a literal word, a %d/%.0f%% format
+// specifier, another <TAG>) between a matching open and close — confirmed by inspecting real
+// Zombie Army 4 menu text, not guessed.
+//
 // Listed longest-sequence-first as documentation of intent: a decoded sequence should never
 // be matched by a shorter pattern that is really just its prefix. In practice every sequence
 // here is already mutually exclusive by its second code unit, so strings.Replacer (which
@@ -23,6 +29,8 @@ var glyphTable = []struct {
 	{"<HIGHLIGHT_SET_START>", "\uE001\u0002"},
 	{"<HIGHLIGHT_RGB_SET_START>", "\uE001\u0003"},
 	{"<HIGHLIGHT_SET_END>", "\uE002"},
+	{"<HIGHLIGHT2_START>", "\uE003\u0002\u0003\u0001\uE004"},
+	{"<HIGHLIGHT2_END>", "\uE003\u0002\u0001\uE004"},
 	{"<NL>", "\n"},
 	{"<NR>", "\r"},
 	{"<TAB>", "\t"},

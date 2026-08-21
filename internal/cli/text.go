@@ -18,37 +18,45 @@ func newTextCmd() *cobra.Command {
 	return cmd
 }
 
-// decodeHTXTMap decodes every entry's text and returns it keyed by hash, plus the hashes in
-// first-seen order. If a hash repeats, the later entry's text wins but keeps the earlier
-// entry's position — matching how the original tool's Dictionary<uint,string> behaves when
-// re-inserting an existing key. addCode prefixes each value with "<hash>\t", matching
-// TextByte.getCsvText(addCode) in the original.
-func decodeHTXTMap(f *asura.HTXTFile, addCode bool) (order []uint32, values map[uint32]string) {
+// htxtRecords decodes every entry's text into a Record and returns the records plus the
+// hashes in first-seen order. If a hash repeats, the later entry's text wins but keeps the
+// earlier entry's position — matching how the original tool's Dictionary<uint,string>
+// behaves when re-inserting an existing key.
+func htxtRecords(f *asura.HTXTFile) (order []uint32, records map[uint32]asura.Record) {
 	order = make([]uint32, 0, len(f.Entries))
 	seen := make(map[uint32]bool, len(f.Entries))
-	values = make(map[uint32]string, len(f.Entries))
+	records = make(map[uint32]asura.Record, len(f.Entries))
 	for _, e := range f.Entries {
-		text := asura.DecodeText(e.Data)
-		if addCode {
-			text = fmt.Sprintf("%d\t%s", e.Hash, text)
-		}
+		text := DecodeTextEntry(e)
 		if !seen[e.Hash] {
 			seen[e.Hash] = true
 			order = append(order, e.Hash)
 		}
-		values[e.Hash] = text
+		records[e.Hash] = text
 	}
-	return order, values
+	return order, records
+}
+
+// DecodeTextEntry renders a single HTXT entry as a Record (command = decimal hash, source =
+// override = its decoded text, until a translation overrides it).
+func DecodeTextEntry(e asura.TextEntry) asura.Record {
+	text := asura.DecodeText(e.Data)
+	command := fmt.Sprint(e.Hash)
+	return asura.Record{Command: command, SourceText: text, OverrideText: text}
 }
 
 func newTextUnpackCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "unpack <file> [csv]",
-		Short: "Unpack an HTXT file's strings to a tab-separated CSV",
+		Use:   "unpack <file> [output]",
+		Short: "Unpack an HTXT file's strings to an interchange file",
 		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, encoding, err := formatAndEncoding(cmd)
+			if err != nil {
+				return err
+			}
 			path := args[0]
-			out := defaultCSVPath(path)
+			out := defaultOutputPath(path, format)
 			if len(args) == 2 {
 				out = args[1]
 			}
@@ -63,12 +71,12 @@ func newTextUnpackCmd() *cobra.Command {
 			}
 			fmt.Fprintf(os.Stderr, "Version: %d  Entries: %d  LanguageID: %d\n", f.Version, len(f.Entries), f.LanguageID)
 
-			order, values := decodeHTXTMap(f, true)
-			lines := make([]string, len(order))
+			order, values := htxtRecords(f)
+			records := make([]asura.Record, len(order))
 			for i, h := range order {
-				lines[i] = values[h]
+				records[i] = values[h]
 			}
-			if err := asura.WriteUTF16LELines(out, lines); err != nil {
+			if err := asura.WriteRecords(out, records, format, encoding); err != nil {
 				return err
 			}
 			fmt.Fprintln(os.Stderr, "wrote", out)
@@ -80,11 +88,15 @@ func newTextUnpackCmd() *cobra.Command {
 func newTextOverrideCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "override <file> <csv> [outfile]",
-		Short: "Write translated strings from a CSV back into an HTXT file",
+		Use:   "override <file> <data> [outfile]",
+		Short: "Write translated strings from an interchange file back into an HTXT file",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			path, csvPath := args[0], args[1]
+			format, encoding, err := formatAndEncoding(cmd)
+			if err != nil {
+				return err
+			}
+			path, dataPath := args[0], args[1]
 			out := path
 			explicit := len(args) == 3
 			if explicit {
@@ -94,17 +106,13 @@ func newTextOverrideCmd() *cobra.Command {
 				return err
 			}
 
-			lines, err := asura.ReadUTF16LELines(csvPath)
+			recs, err := asura.ReadRecords(dataPath, format, encoding)
 			if err != nil {
 				return err
 			}
-			overrides := make(map[uint32]asura.CSVRecord, len(lines))
-			for _, line := range lines {
-				rec, err := asura.ParseCSVRecord(line)
-				if err != nil {
-					return err
-				}
-				code, err := rec.Code()
+			overrides := make(map[uint32]asura.Record, len(recs))
+			for i, rec := range recs {
+				code, err := requireCode(rec, i)
 				if err != nil {
 					return err
 				}
@@ -127,18 +135,22 @@ func newTextOverrideCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&force, "force", false, "override entries even when their current text doesn't match the CSV's recorded source text")
+	cmd.Flags().BoolVar(&force, "force", false, "override entries even when their current text doesn't match the recorded source text")
 	return cmd
 }
 
 func newTextCompareCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "compare <fileA> <fileB> [csv]",
+		Use:   "compare <fileA> <fileB> [output]",
 		Short: "Build a source/override comparison table across two HTXT language files",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			format, encoding, err := formatAndEncoding(cmd)
+			if err != nil {
+				return err
+			}
 			pathA, pathB := args[0], args[1]
-			out := defaultCSVPath(pathA)
+			out := defaultOutputPath(pathA, format)
 			if len(args) == 3 {
 				out = args[2]
 			}
@@ -160,18 +172,18 @@ func newTextCompareCmd() *cobra.Command {
 				return fmt.Errorf("%s: %w", pathB, err)
 			}
 
-			orderA, valuesA := decodeHTXTMap(fA, true)
-			_, valuesB := decodeHTXTMap(fB, false)
-			lines := make([]string, len(orderA))
+			orderA, valuesA := htxtRecords(fA)
+			_, valuesB := htxtRecords(fB)
+			records := make([]asura.Record, len(orderA))
 			for i, h := range orderA {
-				name := valuesA[h]
-				if other, ok := valuesB[h]; ok {
-					lines[i] = name + "\t" + other
-				} else {
-					lines[i] = name + "\t" + name
+				recA := valuesA[h]
+				other := recA.SourceText
+				if recB, ok := valuesB[h]; ok {
+					other = recB.SourceText
 				}
+				records[i] = asura.Record{Command: recA.Command, SourceText: recA.SourceText, OverrideText: other}
 			}
-			if err := asura.WriteUTF16LELines(out, lines); err != nil {
+			if err := asura.WriteRecords(out, records, format, encoding); err != nil {
 				return err
 			}
 			fmt.Fprintln(os.Stderr, "wrote", out)

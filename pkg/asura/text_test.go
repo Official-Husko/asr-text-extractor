@@ -30,6 +30,7 @@ func TestEncodeDecodeText(t *testing.T) {
 		"<HIGHLIGHT_END>",
 		"press <INPUT_FRONTEND_A> to continue",
 		"line1<NL>line2<TAB>indented<NR>",
+		"<HIGHLIGHT2_START>MOUSE<HIGHLIGHT2_END> settings",
 	}
 	for _, s := range cases {
 		if got := DecodeText(EncodeText(s)); got != s {
