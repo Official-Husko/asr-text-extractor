@@ -11,23 +11,31 @@ of the file (the same footer convention as the `HTXT` symbol-name table and `AST
 manifest).
 
 Each entry is: the `RSCF` tag, a `uint32` giving that entry's **total byte length** (tag
-through the end of its texture data), 20 more bytes of fields whose exact meaning isn't fully
-confirmed, a NUL-terminated ASCII source-asset path (e.g.
-`\graphics\characters\...\rs16_clothes_ar.tga` — the extension reflects the *original* art
-source, not what gets extracted), some zero padding, and then the texture itself: a complete,
-standard **DDS** (DirectDraw Surface) file, byte-for-byte identical to what any DDS-aware tool
-expects — confirmed by walking every one of 217 entries in a real 763MB Zombie Army 4 sample to
-an exact, error-free end of file, and by decoding extracted textures with ImageMagick and `file`
-(correct dimensions, correct pixel format, correct pixel content — verified visually, not just
-structurally).
+through the end of its payload), 2 more `uint32` fields of unconfirmed meaning, a `uint32`
+**resource-type code**, a `uint32` flags field of unconfirmed meaning, a `uint32` giving the
+payload's **exact byte length**, a source-asset path in a 4-byte-chunk-aligned string encoding
+(e.g. `\graphics\characters\...\rs16_clothes_ar.tga` — the extension reflects the *original*
+art source, not what gets extracted), and finally the payload itself, read directly via the
+declared length. The resource-type code was cross-checked against independent community
+Asura-format reference decoders (`community_scripts/unpack_rebellion.py`,
+`community_scripts/tools_ZA4.py` — both assertion-verified against real game data): `2` is a
+texture (the only type this tool currently decodes), `0` is a large category this tool doesn't
+touch (see Known limitations), `3` is audio (not seen in the sample used to build this feature,
+not implemented), and `6` is a bare reference to another package with no embedded payload.
+Only type-2 entries whose payload actually starts with the DDS magic are decoded as textures;
+type mismatches and malformed payloads are skipped, not treated as errors, since the declared
+total length keeps the walk in sync with the file regardless — confirmed by walking every one
+of 217 entries in a real 763MB Zombie Army 4 sample to an exact, error-free end of file, and by
+decoding extracted textures with ImageMagick and `file` (correct dimensions, correct pixel
+format, correct pixel content — verified visually, not just structurally).
 
 Both legacy FourCC-tagged DDS (`ATI1`/`ATI2`, i.e. BC4/BC5 — common for normal maps) and the
 newer DX10-extended header (BC7, seen for albedo/roughness textures) show up in the sample
-file. Extraction doesn't need to understand either — it locates the entry's own `"DDS "` magic
-and trusts the entry's declared total length to know where the texture data ends, rather than
-computing a DDS mip-chain size itself (an earlier approach that worked for the first 165
-entries and then broke on a texture-array-shaped surprise — the size field turned out to be
-the right tool for the job all along).
+file. An earlier version of this parser instead searched for the entry's own `"DDS "` magic
+within its declared span rather than trusting the payload-length field directly — that worked
+(and, before it, computing a DDS mip-chain size itself worked for the first 165 entries and
+then broke on a texture-array-shaped surprise), but was less precise and blind to non-texture
+resource types.
 
 ## Commands
 
@@ -98,10 +106,16 @@ loader (which is what matters for actual modding use, and handles it fine).
 
 ## Known limitations
 
-- The 20 bytes of per-entry fields between the total-size field and the path aren't fully
-  understood. One of them was hypothesized to flag the asset's original source format
-  (`.tga` vs `.dds`) but that didn't hold up against the real sample (109/217 mismatches) —
-  it's left unparsed rather than documented with false confidence.
+- 2 of the 5 per-entry header fields (between the total-size field and the resource-type code)
+  and the flags field after it aren't fully understood — one of the 2 was hypothesized to flag
+  the asset's original source format (`.tga` vs `.dds`) but that didn't hold up against the
+  real sample (109/217 mismatches). They're left unparsed rather than documented with false
+  confidence.
+- Only resource-type 2 (texture) is decoded. A real level-package sample has 568 resource-type
+  0 entries totaling 169MB with plain per-object names (no `\graphics\` path prefix) and
+  `l1#`/`l2#`/`l3#`/`l4#`-prefixed variants that shrink in size together — shaped like mesh
+  LOD chains, not textures — that this tool doesn't attempt to extract or interpret. See
+  [Package Extraction](Package-Extraction.md#known-limitations).
 - One real entry in the sample archive (`graphics\specialfx\water\coastal_water_a.dds`) has a
   genuinely non-standard DDS header — different header flags and an unrecognized pixel-format
   FourCC. It still extracts as raw `.dds` (the entry's declared total length doesn't depend on

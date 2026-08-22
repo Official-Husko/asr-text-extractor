@@ -1,7 +1,6 @@
 package asura
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 )
@@ -113,22 +112,23 @@ type manifestEntry struct {
 
 // parseRSFLManifest parses an RSFL manifest section starting at data[start:] (start points
 // at the "RSFL" tag itself), returning its entries and the position right after the section.
-// Each entry is a NUL-terminated ASCII path, zero-padded so the offset field below always
-// starts at a file-absolute 4-byte-aligned position (not "skip every zero byte present" — a
-// handful of real entries have an offset whose own low byte is coincidentally zero, which a
-// greedy zero-skip would misinterpret as one more byte of padding and misalign every field
-// after it), then a uint32 offset, a uint32 size, and one more uint32 field. That last field
-// is always exactly 1 across all 282 entries in a real sample once alignment is computed this
-// way (a strong self-consistency check — the greedy-skip approach got it right for 280 of
-// those 282, with the 2 failures exactly matching the entries with a zero-byte-first offset).
-// The offset is relative to the end of this manifest section (i.e. to the second return
-// value) — not the start of the package's decompressed content — confirmed by real entries
-// decoding cleanly only once that base is added: e.g. one real .anim entry decodes to a small
-// count field followed by the sub-file's own name repeated verbatim
-// ("\x07\x00\x00\x00\x00\x00\x00\x00Explo_Bo..." exactly matching "Explo_Box_Sm_Chunk_13.anim")
-// only with the manifest-end offset included; every entry's offset+size still lands exactly
-// on the next entry's own offset either way, which doesn't by itself distinguish the two —
-// don't rely on that check alone if this ever needs re-deriving.
+// Each entry is a path in the 4-byte-chunk-aligned string encoding alignedString implements
+// (not "skip every zero byte present after the NUL terminator" — a handful of real entries
+// have an offset whose own low byte is coincidentally zero, which a greedy zero-skip would
+// misinterpret as one more byte of padding and misalign every field after it), then a uint32
+// offset, a uint32 size, and one more uint32 field. That last field is always exactly 1 across
+// all 282 entries in a real sample once alignment is computed this way (a strong
+// self-consistency check — the greedy-skip approach got it right for 280 of those 282, with
+// the 2 failures exactly matching the entries with a zero-byte-first offset), and matches
+// independent community reference decoders (unpack_rebellion.py, tools_ZA4.py — see
+// CLAUDE.md), which parse this same field as always-1 too. The offset is relative to the end
+// of this manifest section (i.e. to the second return value) — not the start of the package's
+// decompressed content — confirmed by real entries decoding cleanly only once that base is
+// added: e.g. one real .anim entry decodes to a small count field followed by the sub-file's
+// own name repeated verbatim ("\x07\x00\x00\x00\x00\x00\x00\x00Explo_Bo..." exactly matching
+// "Explo_Box_Sm_Chunk_13.anim") only with the manifest-end offset included; every entry's
+// offset+size still lands exactly on the next entry's own offset either way, which doesn't by
+// itself distinguish the two — don't rely on that check alone if this ever needs re-deriving.
 func parseRSFLManifest(data []byte, start int) ([]manifestEntry, int, error) {
 	end, tag, ok := skipTaggedSection(data, start)
 	if !ok || tag != "RSFL" {
@@ -142,14 +142,9 @@ func parseRSFLManifest(data []byte, start int) ([]manifestEntry, int, error) {
 
 	entries := make([]manifestEntry, 0, num)
 	for i := uint32(0); i < num; i++ {
-		nul := bytes.IndexByte(data[pos:], 0)
-		if nul < 0 {
-			return nil, 0, fmt.Errorf("asura: RSFL manifest entry %d: unterminated path", i)
-		}
-		path := string(data[pos : pos+nul])
-		p := pos + nul + 1
-		if rem := p % 4; rem != 0 {
-			p += 4 - rem
+		path, p, ok := alignedString(data, pos)
+		if !ok {
+			return nil, 0, fmt.Errorf("asura: RSFL manifest entry %d: unterminated or truncated path", i)
 		}
 		if len(data)-p < 12 {
 			return nil, 0, fmt.Errorf("asura: RSFL manifest entry %d (%q): truncated", i, path)

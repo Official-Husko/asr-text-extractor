@@ -72,3 +72,23 @@ func writeU32(buf *bytes.Buffer, v uint32) {
 	binary.LittleEndian.PutUint32(b[:], v)
 	buf.Write(b[:])
 }
+
+// alignedString reads a NUL-terminated ASCII string starting at data[pos:], consuming input
+// in fixed 4-byte chunks (counted from pos itself, not from any absolute file position) until
+// a chunk contains the terminator — the padded string encoding RSCF and RSFL manifest entries
+// both use for their path fields. Matches the "readAlignedString" helper found in independent
+// community Asura-format reference decoders (unpack_rebellion.py, tools_ZA4.py), which this
+// project's own understanding of RSFL's path padding was cross-checked against.
+func alignedString(data []byte, pos int) (s string, next int, ok bool) {
+	start := pos
+	for {
+		if pos+4 > len(data) {
+			return "", 0, false
+		}
+		chunk := data[pos : pos+4]
+		pos += 4
+		if idx := bytes.IndexByte(chunk, 0); idx >= 0 {
+			return string(data[start : pos-4+idx]), pos, true
+		}
+	}
+}

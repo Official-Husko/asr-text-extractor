@@ -42,25 +42,6 @@ func buildManifest(entries []manifestEntrySpec) []byte {
 	return out
 }
 
-// buildRSCFEntryNoDDS builds a bare RSCF-tagged reference entry with no embedded "DDS "
-// payload anywhere in its span — the shape of the one non-texture RSCF entry found
-// immediately after the manifest in a real sample (a self-reference to the package's own
-// name), which parseRSCFEntry must skip without treating as a texture.
-func buildRSCFEntryNoDDS(path string) []byte {
-	var tail bytes.Buffer
-	tail.WriteString(path)
-	tail.WriteByte(0)
-	tail.Write([]byte{0, 0, 0})
-	tail.Write(bytes.Repeat([]byte{0xCD}, 8)) // no "DDS " anywhere in here
-
-	totalSize := 4 + 4 + 20 + tail.Len()
-	var out bytes.Buffer
-	out.WriteString("RSCF")
-	writeU32(&out, uint32(totalSize))
-	out.Write(make([]byte, 20))
-	out.Write(tail.Bytes())
-	return out.Bytes()
-}
 
 func TestParseRSFLManifest(t *testing.T) {
 	entries := []manifestEntrySpec{
@@ -173,8 +154,8 @@ func TestParsePackageTextures(t *testing.T) {
 	extras.WriteString("PBRV") // an unrelated tagged section that must be skipped over
 	writeU32(&extras, 16)      // covers itself (8 bytes) + 8 bytes of payload
 	extras.Write([]byte{1, 2, 3, 4, 5, 6, 7, 8})
-	extras.Write(buildRSCFEntryNoDDS(`Envs\Foo.pc`)) // bare reference, no texture
-	extras.Write(buildRSCFEntry(`graphics\a.dds`, dds))
+	extras.Write(buildRSCFEntry(`Envs\Foo.pc`, 6, nil)) // bare reference, no texture
+	extras.Write(buildRSCFEntry(`graphics\a.dds`, rscfResourceTypeTexture, dds))
 
 	entries := []manifestEntrySpec{
 		{path: `sub.bin`, offset: uint32(extras.Len()), size: uint32(len(subfileData))},

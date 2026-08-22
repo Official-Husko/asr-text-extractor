@@ -1,7 +1,6 @@
 package asura
 
 import (
-	"bytes"
 	"fmt"
 )
 
@@ -24,17 +23,32 @@ type RSCFFile struct {
 	Entries []TextureEntry
 }
 
-// ParseRSCF decodes a sequence of RSCF texture entries from data, which must start with the
-// 8-byte Asura magic immediately followed by the first entry's "RSCF" tag.
+// rscfResourceTypeTexture is the RSCF resource-type code (the 3rd of an entry's 5 header
+// fields, see parseRSCFEntry) for a texture entry. Other observed values — cross-checked
+// against independent community Asura-format reference decoders (unpack_rebellion.py,
+// tools_ZA4.py — see CLAUDE.md) — are 0 (a bare reference to another resource, no embedded
+// payload: e.g. a level package's self-reference to its own .pc file, seen with a declared
+// payload size of 0), 3 (audio), and 6 (a reference to a .pc package, also no embedded
+// payload in samples seen so far). Only textures are decoded today; audio entries exist in
+// real data but extracting them hasn't been tried yet.
+const rscfResourceTypeTexture = 2
+
+// ParseRSCF decodes a sequence of RSCF entries from data, which must start with the 8-byte
+// Asura magic immediately followed by the first entry's "RSCF" tag.
 //
 // Each entry is: the "RSCF" tag, a uint32 giving the entry's total byte length (tag through
-// the end of its DDS data — this is what makes walking the whole file reliable without
-// needing to understand the DDS pixel format at all), 20 more bytes of fields whose exact
-// meaning isn't confirmed (one of them varies per entry and was hypothesized to flag the
-// asset's original source format, but that didn't hold up against real data, so they're left
-// unparsed rather than guessed at), a NUL-terminated ASCII path, zero-padding, and finally
-// the embedded DDS file itself, which is located by searching for the "DDS " magic within the
-// entry's declared span rather than computed from any Asura-specific field.
+// the end of its payload — this is what makes walking the whole file reliable without needing
+// to understand any entry's payload), 4 more uint32 fields (two of unconfirmed meaning, a
+// resource-type code — see rscfResourceTypeTexture — and a flags field of unconfirmed
+// meaning), a fifth uint32 giving the payload's exact byte length, a path string in the
+// 4-byte-chunk-aligned encoding alignedString implements, and finally the payload itself,
+// read directly via the declared length (not searched for by DDS magic — that was an earlier,
+// working-but-imprecise approach this project used before cross-checking the field layout
+// against independent reference decoders that read the same 5 fields with assertion-verified
+// value ranges). Only resource-type-2 (texture) entries whose payload actually starts with
+// the DDS magic are decoded as textures; every other entry (including further embedded audio,
+// unimplemented so far) is skipped, not treated as an error, since the declared total length
+// is enough to stay in sync with the rest of the file regardless.
 //
 // RSCF sections also show up embedded inside larger level-package files (see package.go);
 // parseRSCFEntry below is the shared per-entry decoder both use.
@@ -70,31 +84,46 @@ func ParseRSCF(data []byte) (*RSCFFile, error) {
 }
 
 // parseRSCFEntry decodes one RSCF entry at data[pos:] (which must already be known to start
-// with the "RSCF" tag) and returns the decoded texture (nil if this entry's payload wasn't a
-// recognizable DDS), the position of the next entry, and any hard parse error.
+// with the "RSCF" tag) and returns the decoded texture (nil if this entry isn't a texture, or
+// its declared payload doesn't actually start with the DDS magic), the position of the next
+// entry, and any hard parse error.
 func parseRSCFEntry(data []byte, pos int) (*TextureEntry, int, error) {
 	entryStart := pos
 	r := &reader{data: data, pos: pos + 4}
 	totalSize := r.u32()
-	r.bytes(20) // 5 more fields, meaning not confirmed; not needed to locate this entry's end
-	pathStart := r.pos
-	nul := bytes.IndexByte(data[pathStart:], 0)
-	if nul < 0 || r.err != nil {
+	r.bytes(8) // 2 fields, meaning not confirmed
+	resType := r.u32()
+	r.bytes(4) // flags, meaning not confirmed
+	payloadSize := r.u32()
+	if r.err != nil {
+		return nil, 0, fmt.Errorf("asura: RSCF entry at offset %d: truncated header", entryStart)
+	}
+
+	path, payloadStart, ok := alignedString(data, r.pos)
+	if !ok {
 		return nil, 0, fmt.Errorf("asura: RSCF entry at offset %d: unterminated path", entryStart)
 	}
-	path := string(data[pathStart : pathStart+nul])
 
 	nextEntryStart := entryStart + int(totalSize)
 	if totalSize == 0 || nextEntryStart <= entryStart || nextEntryStart > len(data) {
 		return nil, 0, fmt.Errorf("asura: RSCF entry %q at offset %d: invalid total size %d", path, entryStart, totalSize)
 	}
-	if ddsRel := bytes.Index(data[pathStart+nul:nextEntryStart], []byte("DDS ")); ddsRel >= 0 {
-		ddsStart := pathStart + nul + ddsRel
-		return &TextureEntry{Path: path, Data: data[ddsStart:nextEntryStart]}, nextEntryStart, nil
+
+	payloadEnd := payloadStart + int(payloadSize)
+	if payloadEnd > nextEntryStart {
+		return nil, 0, fmt.Errorf("asura: RSCF entry %q at offset %d: declared payload size %d overruns entry", path, entryStart, payloadSize)
 	}
-	// "DDS " wasn't found in this entry's span — payload not understood, but still advance
-	// by the declared total size so the caller stays in sync with the rest of the file.
-	return nil, nextEntryStart, nil
+
+	if resType != rscfResourceTypeTexture {
+		return nil, nextEntryStart, nil
+	}
+	payload := data[payloadStart:payloadEnd]
+	if len(payload) < 4 || string(payload[:4]) != "DDS " {
+		// The type field says texture but the payload doesn't look like one — don't trust
+		// it, still advance by the declared total size so the caller stays in sync.
+		return nil, nextEntryStart, nil
+	}
+	return &TextureEntry{Path: path, Data: payload}, nextEntryStart, nil
 }
 
 func allZero(b []byte) bool {

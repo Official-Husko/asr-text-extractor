@@ -38,17 +38,19 @@ themselves — shares the same generic framing: a 4-byte uppercase-ASCII tag fol
 `uint32` giving the section's total length counted from the tag's own start, which is enough to
 skip over a section without understanding its contents.
 
-**`RSCF` texture entries are interleaved one at a time throughout this run**, not packed into
-their own contiguous block — confirmed against a real sample where the very first `RSCF`-tagged
-section immediately after the manifest turned out to be a single bare resource reference (no
-embedded texture, just a self-referential path) followed directly by ~2,200 unrelated `CONA`
-entity records, with the real texture entries starting much further in and each one followed by
-its own unrelated section rather than by another texture. Extraction therefore walks every
-section generically and decodes each one tagged `RSCF` as a possible texture inline (same
-per-entry decoder as standalone [`RSCF` texture archives](Texture-Extraction.md): search for the
-embedded `"DDS "` magic within the entry's declared span). In a real 473MB decompressed sample:
-3,071 `RSCF`-tagged sections, 2,502 of which embed a texture — matching an independent
-whole-file search for `"DDS "` exactly.
+**`RSCF` entries are interleaved one at a time throughout this run**, not packed into their own
+contiguous block — confirmed against a real sample where the very first `RSCF`-tagged section
+immediately after the manifest turned out to be a single bare resource reference (no embedded
+payload, just a self-referential path) followed directly by ~2,200 unrelated `CONA` entity
+records, with the real texture entries starting much further in and each one followed by its
+own unrelated section rather than by another texture. Extraction therefore walks every section
+generically and decodes each one tagged `RSCF` as a possible texture inline (same per-entry
+decoder as standalone [`RSCF` texture archives](Texture-Extraction.md) — see that page for the
+entry field layout). In a real 473MB decompressed sample, 3,071 `RSCF`-tagged sections break
+down by their resource-type field as: 2,502 textures (matching an independent whole-file
+search for the `"DDS "` magic exactly), 1 bare package self-reference (0 payload bytes), and
+568 resource-type-0 entries totaling 169MB that this tool doesn't currently extract or
+interpret — see Known limitations below.
 
 The internal layout of `PBRV` (a geometry/mesh block, several megabytes in a typical level) has
 not been reverse-engineered and isn't parsed — it's only skipped over via its declared length,
@@ -93,7 +95,12 @@ repack path yet.
 
 - `PBRV` (geometry/mesh data) and every other non-`RSCF` tagged section between the manifest
   and its sub-files are skipped, not decoded — model/mesh extraction is a planned, separate
-  effort (see [Home](Home.md#planned-not-yet-implemented)).
+  effort (see [Home](Home.md#planned-not-yet-implemented)). A promising lead for that future
+  work: `RSCF` entries with resource-type 0 (see [Texture Extraction](Texture-Extraction.md)) —
+  568 of them in a real sample, totaling 169MB, with plain per-object names (no `\graphics\`
+  path prefix, unlike textures) and `l1#`/`l2#`/`l3#`/`l4#`-prefixed variants whose sizes shrink
+  together in the same object (e.g. 257408 → 234044 → 168182 → 130370 → 98576 bytes) — shaped
+  like mesh LOD chains, not investigated further yet.
 - The manifest entry's trailing `uint32` field (after offset and size) is always `1` across
   every entry in the real samples tested; its meaning beyond that isn't confirmed.
 - `.snd`, `.cut`, and `.ent` sub-files extract as raw, uninterpreted bytes — no attempt is made
