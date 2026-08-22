@@ -35,6 +35,9 @@ type RSCFFile struct {
 // unparsed rather than guessed at), a NUL-terminated ASCII path, zero-padding, and finally
 // the embedded DDS file itself, which is located by searching for the "DDS " magic within the
 // entry's declared span rather than computed from any Asura-specific field.
+//
+// RSCF sections also show up embedded inside larger level-package files (see package.go);
+// parseRSCFEntry below is the shared per-entry decoder both use.
 func ParseRSCF(data []byte) (*RSCFFile, error) {
 	if !CheckMagic(data) {
 		return nil, ErrBadMagic
@@ -54,30 +57,44 @@ func ParseRSCF(data []byte) (*RSCFFile, error) {
 			}
 			return nil, fmt.Errorf("asura: expected RSCF entry at offset %d, found %q", pos, data[pos:pos+4])
 		}
-		entryStart := pos
-		r := &reader{data: data, pos: pos + 4}
-		totalSize := r.u32()
-		r.bytes(20) // 5 more fields, meaning not confirmed; not needed to locate this entry's end
-		pathStart := r.pos
-		nul := bytes.IndexByte(data[pathStart:], 0)
-		if nul < 0 || r.err != nil {
-			return nil, fmt.Errorf("asura: RSCF entry at offset %d: unterminated path", entryStart)
+		entry, nextPos, err := parseRSCFEntry(data, pos)
+		if err != nil {
+			return nil, err
 		}
-		path := string(data[pathStart : pathStart+nul])
-
-		nextEntryStart := entryStart + int(totalSize)
-		if totalSize == 0 || nextEntryStart <= entryStart || nextEntryStart > len(data) {
-			return nil, fmt.Errorf("asura: RSCF entry %q at offset %d: invalid total size %d", path, entryStart, totalSize)
+		if entry != nil {
+			f.Entries = append(f.Entries, *entry)
 		}
-		if ddsRel := bytes.Index(data[pathStart+nul:nextEntryStart], []byte("DDS ")); ddsRel >= 0 {
-			ddsStart := pathStart + nul + ddsRel
-			f.Entries = append(f.Entries, TextureEntry{Path: path, Data: data[ddsStart:nextEntryStart]})
-		}
-		// If "DDS " wasn't found, this entry's payload isn't understood — skip it, but still
-		// advance by its declared total size so the rest of the file stays in sync.
-		pos = nextEntryStart
+		pos = nextPos
 	}
 	return f, nil
+}
+
+// parseRSCFEntry decodes one RSCF entry at data[pos:] (which must already be known to start
+// with the "RSCF" tag) and returns the decoded texture (nil if this entry's payload wasn't a
+// recognizable DDS), the position of the next entry, and any hard parse error.
+func parseRSCFEntry(data []byte, pos int) (*TextureEntry, int, error) {
+	entryStart := pos
+	r := &reader{data: data, pos: pos + 4}
+	totalSize := r.u32()
+	r.bytes(20) // 5 more fields, meaning not confirmed; not needed to locate this entry's end
+	pathStart := r.pos
+	nul := bytes.IndexByte(data[pathStart:], 0)
+	if nul < 0 || r.err != nil {
+		return nil, 0, fmt.Errorf("asura: RSCF entry at offset %d: unterminated path", entryStart)
+	}
+	path := string(data[pathStart : pathStart+nul])
+
+	nextEntryStart := entryStart + int(totalSize)
+	if totalSize == 0 || nextEntryStart <= entryStart || nextEntryStart > len(data) {
+		return nil, 0, fmt.Errorf("asura: RSCF entry %q at offset %d: invalid total size %d", path, entryStart, totalSize)
+	}
+	if ddsRel := bytes.Index(data[pathStart+nul:nextEntryStart], []byte("DDS ")); ddsRel >= 0 {
+		ddsStart := pathStart + nul + ddsRel
+		return &TextureEntry{Path: path, Data: data[ddsStart:nextEntryStart]}, nextEntryStart, nil
+	}
+	// "DDS " wasn't found in this entry's span — payload not understood, but still advance
+	// by the declared total size so the caller stays in sync with the rest of the file.
+	return nil, nextEntryStart, nil
 }
 
 func allZero(b []byte) bool {

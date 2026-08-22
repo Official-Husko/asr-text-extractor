@@ -32,7 +32,9 @@ It handles these chunk types:
   text    - HTXT chunks: menu/UI strings, one table per file (translate + repack)
   voice   - DLLN chunks: voice line strings, many entries per file (translate + repack)
   sound   - ASTS chunks: embedded WAV assets in a streamsounds manifest (extract only)
-  texture - RSCF chunks: embedded DDS textures in a texture archive (extract only)`,
+  texture - RSCF chunks: embedded DDS textures in a texture archive (extract only)
+  package - AsuraZbb-compressed level packages (.pc, .pc_entdata): manifest
+            sub-files and embedded textures (extract only)`,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
@@ -44,6 +46,7 @@ It handles these chunk types:
 	root.AddCommand(newVoiceCmd())
 	root.AddCommand(newSoundCmd())
 	root.AddCommand(newTextureCmd())
+	root.AddCommand(newPackageCmd())
 	return root
 }
 

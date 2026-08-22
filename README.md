@@ -13,8 +13,10 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
 - **`sound`** — `ASTS` chunks: embedded WAV assets in a `.streamsounds` manifest — extract only
 - **`texture`** — `RSCF` chunks: embedded textures in a `.pc_textures` archive — extract only,
   as raw `.dds` or, with `--convert png`, as decoded lossless PNG
+- **`package`** — `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`): manifest
+  sub-files and embedded textures — extract only
 
-Model unpacking is planned but not yet implemented — the container/chunk reader (`pkg/asura`)
+Model/mesh unpacking is planned but not yet implemented — the container/chunk reader (`pkg/asura`)
 is built to be extended with new chunk types as those formats are reverse-engineered.
 Recompiling/repacking beyond text/voice overrides is also planned (phase 2).
 
