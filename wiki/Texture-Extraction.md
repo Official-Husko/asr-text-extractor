@@ -55,12 +55,30 @@ plugin), or any other DDS-aware tool — no conversion step needed.
 Like `sound`, this is extract-only: there's no `--format`/`--encoding` (textures aren't a
 translatable interchange format) and no repack path yet.
 
+### If a texture looks like colorful noise when you view it
+
+That's very likely your viewer, not a bad extraction — about half of a typical archive's
+textures use the newer DX10-extended DDS header (BC7), and plenty of DDS viewers/plugins only
+support the older plain-FourCC header (the format most normal maps use, `ATI1`/`ATI2`/BC4/BC5).
+**XnView is a confirmed example**: its DDS plugin doesn't understand the DX10 extension, so it
+renders BC7 textures as static while showing legacy-format ones (mostly normals) correctly —
+matching "normals are fine, everything else is broken" exactly. Before assuming a bad
+extraction, cross-check with a tool known to support BC7/DX10: ImageMagick
+(`magick file.dds file.png`), an up-to-date GIMP DDS plugin, or Blender's own image loader
+(which is what matters for actual modding use, and handles it fine).
+
 ## Known limitations
 
 - The 20 bytes of per-entry fields between the total-size field and the path aren't fully
   understood. One of them was hypothesized to flag the asset's original source format
   (`.tga` vs `.dds`) but that didn't hold up against the real sample (109/217 mismatches) —
   it's left unparsed rather than documented with false confidence.
+- One real entry in the sample archive (`graphics\specialfx\water\coastal_water_a.dds`) has a
+  genuinely non-standard DDS header — different header flags and an unrecognized pixel-format
+  FourCC. It still extracts (the entry's declared total length doesn't depend on understanding
+  the payload), but the resulting file may not be valid DDS. This looks like a special-cased
+  asset type (procedural/flow-map water shader input, going by the path), not a sign that
+  other entries are at risk — it's the only one of 217 that didn't decode cleanly.
 - Extract-only: no way to repack an edited/replacement DDS back into an archive yet (true of
   every asset type except text/voice strings — see [Home](Home.md#planned-not-yet-implemented)).
 - Only tested against one real archive (217 entries, BC4/BC5/BC7 formats, no texture arrays or
