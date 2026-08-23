@@ -19,11 +19,15 @@ type MeshGroup struct {
 }
 
 // MeshVertex is one dequantized vertex of a decoded Mesh: a local-space position (already
-// converted from its on-disk quantized form) and its two UV channels.
+// converted from its on-disk quantized form), its two UV channels, and up to 8 bone
+// influences (BoneIDs[i] weighted by BoneWeights[i]/255, zero-weight entries meaning "unused"
+// — see Skeleton.Skin).
 type MeshVertex struct {
-	Position [3]float32
-	UV0      [2]float32
-	UV1      [2]float32
+	Position    [3]float32
+	UV0         [2]float32
+	UV1         [2]float32
+	BoneIDs     [8]uint8
+	BoneWeights [8]uint8
 }
 
 // Mesh is a decoded 3D object mesh from an RSCF resource-type-0 entry's payload (see
@@ -64,10 +68,12 @@ type Mesh struct {
 // normals (3 int16) at offset 8, 3 more int16 fields of unconfirmed meaning at offset 14, 2
 // uint16 fields of unconfirmed meaning at offset 20, two UV channels (2 float16 each) at
 // offsets 24 and 28, 8 bytes of bone skin weights at offset 32, and 8 bytes of bone indices at
-// offset 40. Only position and the two UV channels are decoded into MeshVertex; normals and
-// skinning data aren't exposed yet. Position dequantizes as
-// `(raw/32767) * (scale/2) + offset` per axis (raw read as an unsigned 16-bit value, per the
-// reference implementation, despite the asymmetric-looking /32767 divisor).
+// offset 40. Normals aren't decoded; position, both UV channels, and the bone weights/indices
+// are (see Skeleton.Skin for how the latter two combine with a matching HSKN chunk to
+// correctly position rigid sub-parts — e.g. a rifle bolt — relative to the rest of a Mesh).
+// Position dequantizes as `(raw/32767) * (scale/2) + offset` per axis (raw read as an unsigned
+// 16-bit value, per the reference implementation, despite the asymmetric-looking /32767
+// divisor).
 func ParseMesh(path string, payload []byte) (*Mesh, error) {
 	r := &reader{data: payload}
 	groupCount := r.u32()
@@ -123,7 +129,7 @@ func ParseMesh(path string, payload []byte) (*Mesh, error) {
 			raw := binary.LittleEndian.Uint16(v[axis*2 : axis*2+2])
 			pos[axis] = float32(raw)/32767*(scale[axis]/2) + offset[axis]
 		}
-		vertices[i] = MeshVertex{
+		mv := MeshVertex{
 			Position: pos,
 			UV0: [2]float32{
 				float16ToFloat32(binary.LittleEndian.Uint16(v[24:26])),
@@ -134,6 +140,9 @@ func ParseMesh(path string, payload []byte) (*Mesh, error) {
 				float16ToFloat32(binary.LittleEndian.Uint16(v[30:32])),
 			},
 		}
+		copy(mv.BoneWeights[:], v[32:40])
+		copy(mv.BoneIDs[:], v[40:48])
+		vertices[i] = mv
 	}
 
 	triStart := vertStart + int(vertCount)*meshVertexStride

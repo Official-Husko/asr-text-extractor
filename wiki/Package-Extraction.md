@@ -78,18 +78,40 @@ The header is `44 + 24*groupCount` bytes: 5 `uint32` fields (group count, vertex
 index count, a redundant triangle count, and one unconfirmed field), then one 24-byte record
 per group (a material hash plus that group's own index count), then a 3-float position
 dequantization scale and a 3-float offset. Per vertex (48-byte stride): a quantized position (3
-× `uint16` at offset 0, dequantized per axis as `raw/32767 * (scale/2) + offset`) and two UV
-channels (2 × half-float each) at offsets 24 and 28. The rest of each 48-byte vertex (normals,
-skin weights, and bone indices, per the reference importer) isn't decoded yet.
+× `uint16` at offset 0, dequantized per axis as `raw/32767 * (scale/2) + offset`), two UV
+channels (2 × half-float each) at offsets 24 and 28, and up to 8 bone weight/index pairs used
+for skinning (see below). Normals aren't decoded.
 
 All group counts are supported — real samples have 1, 2, 4, and 10. Validated by checking that
 decoded triangle edge lengths are small relative to each mesh's own bounding box (i.e.
 triangles connect nearby vertices, the signature of a coherent mesh rather than scrambled
 data) and that bounding-box sizes are physically plausible across a huge range of named
-objects, from a 6cm light bulb to an 8m fractured structure piece — there's still no way to
-visually render decoded geometry from the environment this tool was developed in, so if an
-exported model looks wrong once actually opened in a 3D viewer, that's genuinely useful
-feedback, not a formality.
+objects, from a 6cm light bulb to an 8m fractured structure piece — and, since then, by an
+actual user check in Blender: a real multi-part mesh (Zombie Army 4's "carcano" rifle) came out
+with a recognizable body and recognizable bolt/bolt-handle/firing-pin/trigger sub-parts, just
+not quite correctly positioned relative to the body. That confirmed the core geometry decode is
+right and pointed at a real gap — see Skinning below for the fix.
+
+### Skinning multi-part meshes
+
+Some meshes (like a rifle's bolt assembly) decode as multiple loosely-connected sub-parts
+rather than one solid shape, and each vertex's raw decoded position isn't quite the final,
+correctly assembled one — it needs a small correction from a matching skeleton's bind pose.
+This tool decodes `HSKN` chunks (also found among the same tagged sections `RSCF` entries live
+in) as a named bone hierarchy, matches each mesh to a same-named skeleton (case-insensitively,
+and ignoring an `l1#`/`l2#`/... LOD prefix — all LOD variants of a rigged mesh share one
+skeleton), and applies standard linear-blend skinning using each vertex's bone weights before
+the mesh is handed back. A real sample confirms the shape of the fix exactly: the "carcano"
+mesh's 5 distinct bone IDs match an HSKN chunk named "Carcano" with exactly 5 bones — Body,
+Bolt, Bolt_Handle, Firing_Pin, Trigger — all parented to Body with identity rotations and small
+(centimeter-scale) translation-only offsets, matching both the rough scale of the
+misplacement and (per the user's own visual check) the correct fix. Meshes with no matching
+skeleton, or whose vertices carry no bone weight at all, are returned unchanged — this is
+automatic and free for meshes that don't need it.
+
+`HSKN`'s own on-disk layout has several fields gated by a version number and a flags bitfield
+that this tool doesn't fully decode (only what's needed to reach the bind-pose transform data);
+per-bone names are parsed best-effort past that point but aren't required for skinning to work.
 
 ## Commands
 
@@ -136,18 +158,24 @@ repack path yet.
 
 - `PBRV` and every other non-`RSCF` tagged section between the manifest and its sub-files are
   skipped, not decoded.
-- `Mesh` only decodes position and both UV channels — no normals, skin weights, or bone
-  indices, even though the reference implementation this was ported from decodes all of them
-  (the source data is there in the vertex stride, `mesh.go` just doesn't read it yet). OBJ
-  export therefore has no shading data; Blender's own recalculate-normals fills the gap
-  reasonably well for most static props, but skinned/rigged meshes have no way to bind to a
-  skeleton via OBJ at all — a skeleton importer (from the same reference project's `HSKN`
-  handling) and a richer export format (glTF, most likely) would both be needed for that.
+- `Mesh` doesn't decode normals, even though the reference implementation this was ported from
+  does. OBJ export therefore has no shading data; Blender's own recalculate-normals fills the
+  gap reasonably well for most props, static or skinned.
+- Skinning applies each vertex's bone weights, but OBJ itself has no concept of a skeleton or
+  vertex groups — the export is a single static (already-skinned) mesh in its bind pose, not a
+  riggable one. A richer export format (glTF, most likely) would be needed to carry the
+  skeleton itself across for actual re-posing/animation work in Blender.
+- `HSKN`'s own on-disk layout has several fields gated by a version number and a flags bitfield
+  that aren't decoded, only skipped past (bone names are the exception — parsed best-effort,
+  since they aren't needed for skinning to work but are useful to have). Every real `HSKN`
+  chunk sampled uses the same version, so only 4 of the format's possible flag/version
+  combinations have been exercised.
 - Mesh decoding was validated by checking that decoded triangle edge lengths are small relative
   to each mesh's own bounding box and that bounding-box sizes are physically plausible across a
-  wide range of named objects — not by actually rendering the geometry in a 3D viewer, since
-  there's no way to do that from the environment this tool was developed in. If an exported OBJ
-  looks wrong once opened in Blender, that's a real signal worth reporting back.
+  wide range of named objects, and skinning was confirmed by an actual user visual check in
+  Blender on one real multi-part mesh (see Skinning above) — not a systematic check across many
+  rigged meshes. If an exported OBJ looks wrong once opened in a 3D viewer, that's a real signal
+  worth reporting back.
 - The manifest entry's trailing `uint32` field (after offset and size) is always `1` across
   every entry in the real samples tested; its meaning beyond that isn't confirmed.
 - `.snd`, `.cut`, and `.ent` sub-files extract as raw, uninterpreted bytes — no attempt is made

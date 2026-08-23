@@ -211,3 +211,59 @@ func TestParsePackage(t *testing.T) {
 		t.Fatalf("Entries = %+v", pkg.Entries)
 	}
 }
+
+// TestParsePackageMeshSkinning covers the interaction found against a real sample (a Zombie
+// Army 4 rifle whose bolt/trigger/etc. sub-parts decode to a slightly wrong position on their
+// own): a mesh named "widget" whose lone vertex is 100%-weighted to bone 1 of an HSKN chunk
+// named "Widget" (case differs, as it does for real mesh/skeleton name pairs) should come out
+// repositioned by that bone's bind-pose offset, and an "l1#widget" LOD variant should match the
+// same skeleton via its base name.
+func TestParsePackageMeshSkinning(t *testing.T) {
+	verts := [][3]uint16{{0, 0, 0}}
+	uv0 := [][2]uint16{{0, 0}}
+	meshPayload := buildMeshPayload(t, nil, [3]float32{1, 1, 1}, [3]float32{0, 0, 0}, verts, uv0, uv0, nil)
+	// buildMeshPayload doesn't set bone weights; patch vertex 0's weight/bone-ID bytes
+	// (offsets 32 and 40 within the 48-byte vertex stride, itself right after the header) to
+	// fully weight it to bone 1.
+	vertOffset := len(meshPayload) - meshVertexStride
+	meshPayload[vertOffset+32] = 255 // BoneWeights[0]
+	meshPayload[vertOffset+40] = 1   // BoneIDs[0]
+
+	sk := buildHSKN(t, "Widget", 29, 0xC9,
+		[]uint32{0, 0},
+		[][3]float32{{0, 0, 0}, {2, 3, 4}},
+		[][4]float32{{1, 0, 0, 0}, {1, 0, 0, 0}},
+		[]string{"Root", "Part"})
+
+	var extras bytes.Buffer
+	extras.Write(sk)
+	extras.Write(buildRSCFEntry("widget", rscfResourceTypeMesh, meshPayload))
+	extras.Write(buildRSCFEntry("l1#widget", rscfResourceTypeMesh, meshPayload))
+
+	entries := []manifestEntrySpec{
+		{path: `sub.bin`, offset: uint32(extras.Len()), size: 4},
+	}
+	manifest := buildManifest(entries)
+
+	var buf bytes.Buffer
+	buf.Write(Magic[:])
+	buf.WriteString("FNFO")
+	writeU32(&buf, 8)
+	buf.Write(manifest)
+	buf.Write(extras.Bytes())
+	buf.WriteString("DATA")
+
+	pkg, err := parsePackageContent(buf.Bytes())
+	if err != nil {
+		t.Fatalf("parsePackageContent: %v", err)
+	}
+	if len(pkg.Meshes) != 2 {
+		t.Fatalf("got %d meshes, want 2", len(pkg.Meshes))
+	}
+	for _, m := range pkg.Meshes {
+		want := [3]float32{2, 3, 4} // bone 1's bind-pose offset, vertex started at the origin
+		if !vecAlmostEqual(m.Vertices[0].Position, want) {
+			t.Errorf("mesh %q vertex 0 Position = %v, want %v (skeleton not applied?)", m.Path, m.Vertices[0].Position, want)
+		}
+	}
+}

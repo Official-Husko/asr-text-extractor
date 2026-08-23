@@ -3,6 +3,7 @@ package asura
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 )
 
 // PackageEntry is one file referenced by an Asura level-package's FNFO/RSFL manifest — e.g.
@@ -72,25 +73,34 @@ func parsePackageContent(data []byte) (*Package, error) {
 	}
 
 	// Between the manifest and the manifest-referenced sub-files sits a long run of tagged
-	// sections — geometry/spatial data (PBRV, SDPH), a small unidentified one (IRTX), and
-	// many section types that turn out to be per-level-object records (CONA entity
-	// transforms, SDSM/SDEV spatial data, HSKN/HSKL/HSBB/HSKE/HMPT skeleton/hitbox data,
-	// FAAN/TXAN animation refs, and more) — all sharing the same generic tag+size framing.
-	// RSCF sections are interleaved throughout this run one at a time (each immediately
-	// followed by unrelated sections, not packed contiguously); most are textures or
-	// single-group meshes, but some are bare resource references or other resource types this
-	// package doesn't decode (confirmed against a real sample: 3071 RSCF sections — 2502
-	// textures, matching an independent whole-file search for "DDS " exactly, 550 single-group
-	// meshes, 1 bare package reference, and 2 unrelated "inst" resources that don't decode as
-	// anything here). So rather than trying to locate "the start of the RSCF archive", every
-	// section is walked generically, and each one tagged RSCF is decoded as a possible texture
-	// or mesh entry inline.
+	// sections — geometry/spatial data (PBRV, SDPH), a small unidentified one (IRTX), skeletons
+	// (HSKN — see skeleton.go), and many section types that turn out to be per-level-object
+	// records (CONA entity transforms, SDSM/SDEV spatial data, HSKL/HSBB/HSKE/HMPT
+	// skeleton-adjacent data not yet decoded, FAAN/TXAN animation refs, and more) — all sharing
+	// the same generic tag+size framing. RSCF sections are interleaved throughout this run one
+	// at a time (each immediately followed by unrelated sections, not packed contiguously);
+	// most are textures or meshes, but some are bare resource references or other resource
+	// types this package doesn't decode (confirmed against a real sample: 3071 RSCF sections —
+	// 2502 textures, matching an independent whole-file search for "DDS " exactly, 550 meshes,
+	// 1 bare package reference, and 2 unrelated "inst" resources that don't decode as anything
+	// here). So rather than trying to locate "the start of the RSCF archive", every section is
+	// walked generically, decoding each one tagged RSCF as a possible texture or mesh entry
+	// inline, and collecting every HSKN skeleton found along the way by name for a second pass
+	// once the walk is done (a mesh needing its skeleton's bind pose to be positioned correctly
+	// — see skeleton.go — isn't guaranteed to appear after that skeleton's own HSKN section in
+	// the file, so skinning can't be applied inline during this same walk).
+	skeletons := map[string]*Skeleton{}
 	pos := rsflEnd
+walk:
 	for pos < extrasStart {
-		if len(data)-pos >= 4 && string(data[pos:pos+4]) == "RSCF" {
+		if len(data)-pos < 4 {
+			break
+		}
+		switch string(data[pos : pos+4]) {
+		case "RSCF":
 			entry, next, err := parseRSCFEntry(data, pos)
 			if err != nil {
-				break
+				break walk
 			}
 			if tex := entry.asTexture(); tex != nil {
 				pkg.Textures = append(pkg.Textures, *tex)
@@ -98,16 +108,51 @@ func parsePackageContent(data []byte) (*Package, error) {
 				pkg.Meshes = append(pkg.Meshes, *m)
 			}
 			pos = next
+		case "HSKN":
+			next, _, ok := skipTaggedSection(data, pos)
+			if !ok {
+				break walk
+			}
+			if sk, err := ParseSkeleton(data[pos:next]); err == nil && sk.Name != "" {
+				skeletons[skeletonKey(sk.Name)] = sk
+			}
+			pos = next
+		default:
+			next, _, ok := skipTaggedSection(data, pos)
+			if !ok {
+				break walk
+			}
+			pos = next
+		}
+	}
+
+	for i, m := range pkg.Meshes {
+		sk := skeletons[skeletonKey(meshBaseName(m.Path))]
+		if sk == nil {
 			continue
 		}
-		next, _, ok := skipTaggedSection(data, pos)
-		if !ok {
-			break
+		positions := sk.Skin(&pkg.Meshes[i])
+		for j := range pkg.Meshes[i].Vertices {
+			pkg.Meshes[i].Vertices[j].Position = positions[j]
 		}
-		pos = next
 	}
 
 	return pkg, nil
+}
+
+// meshBaseName strips a mesh path's LOD prefix (e.g. "l1#carcano" -> "carcano") so it can be
+// matched against a Skeleton's own name — LOD variants of a rigged mesh share one skeleton.
+func meshBaseName(path string) string {
+	if i := strings.IndexByte(path, '#'); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+// skeletonKey normalizes a mesh/skeleton name for matching (case differs between the two in
+// real samples — a mesh named "carcano" pairs with an HSKN chunk named "Carcano").
+func skeletonKey(name string) string {
+	return strings.ToLower(name)
 }
 
 type manifestEntry struct {

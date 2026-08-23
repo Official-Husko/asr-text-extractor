@@ -14,12 +14,12 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
 - **`texture`** — `RSCF` chunks: embedded textures in a `.pc_textures` archive — extract only,
   as raw `.dds` or, with `--convert png`, as decoded lossless PNG
 - **`package`** — `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`): manifest
-  sub-files, embedded textures, and meshes (as Wavefront `.obj`) — extract only
+  sub-files, embedded textures, and meshes (as Wavefront `.obj`, automatically skinned against
+  a matching skeleton when a mesh has one — e.g. a rifle's bolt assembly) — extract only
 
-Finer mesh detail (normals, skin weights, bone indices) and skinned/rigged mesh support aren't
-decoded yet — the container/chunk reader (`pkg/asura`) is built to be extended as more of these
-formats are reverse-engineered. Recompiling/repacking beyond text/voice overrides is also
-planned (phase 2).
+Mesh normals aren't decoded yet — the container/chunk reader (`pkg/asura`) is built to be
+extended as more of these formats are reverse-engineered. Recompiling/repacking beyond
+text/voice overrides is also planned (phase 2).
 
 ## Quick start
 
