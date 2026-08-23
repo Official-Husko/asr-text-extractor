@@ -113,6 +113,24 @@ automatic and free for meshes that don't need it.
 that this tool doesn't fully decode (only what's needed to reach the bind-pose transform data);
 per-bone names are parsed best-effort past that point but aren't required for skinning to work.
 
+Exported OBJ files split into named `g` groups by bone (e.g. `g Body`, `g Bolt`) whenever a
+skeleton was matched — a *different* grouping than the mesh's own material `Groups` (which
+"carcano" has only one of, despite having five distinct bones) — so individual rigid sub-parts
+can be selected/hidden/moved independently in Blender. Meshes with no matching skeleton export
+as a single ungrouped mesh, same as before.
+
+### A note on axis orientation
+
+Exported positions currently get **no** transform (raw, as decoded) — the triangle winding
+order is flipped instead. This took two wrong attempts to get here (a single-axis negation,
+then a 90-degree rotation about X that came out rotated the wrong way), and the current state
+is a mathematical composition of what's been confirmed so far, not a fresh guess — see
+`objAxes`'s doc comment in `internal/cli/package.go` for the derivation and, importantly, the
+tension it's still in with the *original* bug report (this exact position math was what
+produced the original "upside-down" complaint) — the working theory is that the original issue
+was actually a face-winding/normals problem, which the winding flip now addresses, but that's
+unconfirmed. If models still look wrong after this change, that's the part to revisit.
+
 ## Commands
 
 ```text

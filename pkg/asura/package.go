@@ -135,6 +135,11 @@ walk:
 		for j := range pkg.Meshes[i].Vertices {
 			pkg.Meshes[i].Vertices[j].Position = positions[j]
 		}
+		names := make([]string, len(sk.Bones))
+		for j, b := range sk.Bones {
+			names[j] = b.Name
+		}
+		pkg.Meshes[i].BoneNames = names
 	}
 
 	return pkg, nil
