@@ -5,10 +5,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"image/png"
 	"io"
 	"math"
+	"strings"
 
 	"github.com/Official-Husko/asr-text-extractor/pkg/asura"
+	"github.com/Official-Husko/asr-text-extractor/pkg/dds"
 )
 
 // glTF 2.0 accessor component types, buffer view targets, and the .glb container's own chunk
@@ -51,11 +54,37 @@ type gltfAccessor struct {
 type gltfPrimitive struct {
 	Attributes map[string]int `json:"attributes"`
 	Indices    int            `json:"indices"`
+	Material   *int           `json:"material,omitempty"`
 }
 
 type gltfMesh struct {
 	Name       string          `json:"name,omitempty"`
 	Primitives []gltfPrimitive `json:"primitives"`
+}
+
+type gltfImage struct {
+	MimeType   string `json:"mimeType"`
+	BufferView int    `json:"bufferView"`
+}
+
+type gltfTexture struct {
+	Source int `json:"source"`
+}
+
+type gltfTextureInfo struct {
+	Index int `json:"index"`
+}
+
+type gltfPBRMetallicRoughness struct {
+	BaseColorTexture *gltfTextureInfo `json:"baseColorTexture,omitempty"`
+	MetallicFactor   *float64         `json:"metallicFactor,omitempty"`
+	RoughnessFactor  *float64         `json:"roughnessFactor,omitempty"`
+}
+
+type gltfMaterial struct {
+	Name                 string                    `json:"name,omitempty"`
+	PBRMetallicRoughness *gltfPBRMetallicRoughness `json:"pbrMetallicRoughness,omitempty"`
+	NormalTexture        *gltfTextureInfo          `json:"normalTexture,omitempty"`
 }
 
 type gltfNode struct {
@@ -84,6 +113,9 @@ type gltfDocument struct {
 	Scenes      []gltfScene      `json:"scenes"`
 	Nodes       []gltfNode       `json:"nodes"`
 	Meshes      []gltfMesh       `json:"meshes,omitempty"`
+	Materials   []gltfMaterial   `json:"materials,omitempty"`
+	Textures    []gltfTexture    `json:"textures,omitempty"`
+	Images      []gltfImage      `json:"images,omitempty"`
 	Skins       []gltfSkin       `json:"skins,omitempty"`
 	Accessors   []gltfAccessor   `json:"accessors,omitempty"`
 	BufferViews []gltfBufferView `json:"bufferViews,omitempty"`
@@ -139,6 +171,8 @@ func quatToGLTF(q [4]float32) []float64 {
 }
 
 func intPtr(i int) *int { return &i }
+
+func floatPtr(f float64) *float64 { return &f }
 
 // composeMat4 builds a column-major, scale-1 4x4 transform matrix that rotates by rot and then
 // translates by trans — the same "T * R" composition order glTF's own separate node.rotation/
@@ -203,14 +237,16 @@ func boneNodeName(b asura.Bone, index int) string {
 
 // writeGLB writes a mesh as a binary glTF 2.0 (.glb) file — the default mesh output format (see
 // writeOBJ for the plain, unrigged alternative). It's a thin wrapper around addMeshNodes: build
-// an empty document, add m's own node(s) to it, point the scene straight at them.
-func writeGLB(w io.Writer, m asura.Mesh) error {
+// an empty document, add m's own node(s) to it, point the scene straight at them. textures is
+// the whole package's texture list, from which a matching material is embedded — see
+// addMaterial; pass nil for a mesh with no associated package (or when no material is wanted).
+func writeGLB(w io.Writer, m asura.Mesh, textures []asura.TextureEntry) error {
 	bin := &gltfBinBuilder{}
 	doc := gltfDocument{
 		Asset:  gltfAsset{Version: "2.0", Generator: "asr-text-extractor"},
 		Scenes: []gltfScene{{}},
 	}
-	nodes, err := addMeshNodes(&doc, bin, m)
+	nodes, err := addMeshNodes(&doc, bin, m, textures, map[string]int{})
 	if err != nil {
 		return err
 	}
@@ -244,16 +280,19 @@ func writeGLB(w io.Writer, m asura.Mesh) error {
 // came in as "<name>.001" instead of a clean name). A skinned variant's mesh object (a separate
 // Blender Object from its armature, parented to it) is named "LOD<n> Mesh" so it doesn't in turn
 // collide with its own armature's "LOD<n>" name in that same global namespace.
-func writeGLBGroup(w io.Writer, _ string, meshes []asura.Mesh) error {
+func writeGLBGroup(w io.Writer, _ string, meshes []asura.Mesh, textures []asura.TextureEntry) error {
 	bin := &gltfBinBuilder{}
 	doc := gltfDocument{
 		Asset:  gltfAsset{Version: "2.0", Generator: "asr-text-extractor"},
 		Scenes: []gltfScene{{}},
 	}
+	// Every LOD/state variant of one mesh matches the same textures (same base name — see
+	// addMaterial), so this cache avoids embedding identical image bytes once per variant.
+	materialCache := map[string]int{}
 
 	var roots []int
 	for _, m := range meshes {
-		nodes, err := addMeshNodes(&doc, bin, m)
+		nodes, err := addMeshNodes(&doc, bin, m, textures, materialCache)
 		if err != nil {
 			return err
 		}
@@ -294,7 +333,7 @@ func writeGLBGroup(w io.Writer, _ string, meshes []asura.Mesh) error {
 // independently selected and posed in Blender — a real armature for rigging, not just corrected
 // static geometry. Bones don't inherit each other's posing (Bone.ParentIndex isn't used to nest
 // joint nodes, matching Skin's own formula) — a known, documented limitation, not an oversight.
-func addMeshNodes(doc *gltfDocument, bin *gltfBinBuilder, m asura.Mesh) ([]int, error) {
+func addMeshNodes(doc *gltfDocument, bin *gltfBinBuilder, m asura.Mesh, textures []asura.TextureEntry, materialCache map[string]int) ([]int, error) {
 	if len(m.Vertices) == 0 {
 		return nil, fmt.Errorf("asura: mesh %q has no vertices", m.Path)
 	}
@@ -397,10 +436,15 @@ func addMeshNodes(doc *gltfDocument, bin *gltfBinBuilder, m asura.Mesh) ([]int, 
 		Count: len(m.Triangles) * 3, Type: "SCALAR",
 	})
 
+	prim := gltfPrimitive{Attributes: attrs, Indices: idxAcc}
+	if matIdx := addMaterial(doc, bin, m.Path, textures, materialCache); matIdx >= 0 {
+		prim.Material = intPtr(matIdx)
+	}
+
 	meshIdx := len(doc.Meshes)
 	doc.Meshes = append(doc.Meshes, gltfMesh{
 		Name:       m.Path,
-		Primitives: []gltfPrimitive{{Attributes: attrs, Indices: idxAcc}},
+		Primitives: []gltfPrimitive{prim},
 	})
 
 	if m.Skeleton == nil {
@@ -438,6 +482,91 @@ func addMeshNodes(doc *gltfDocument, bin *gltfBinBuilder, m asura.Mesh) ([]int, 
 	doc.Nodes = append(doc.Nodes, gltfNode{Name: m.Path, Mesh: intPtr(meshIdx), Skin: intPtr(skinIdx)})
 
 	return []int{rootIdx, meshNodeIdx}, nil
+}
+
+// addMaterial finds textures belonging to m by folder-name convention (see meshTextures),
+// embeds whichever are found as a glTF material, and returns its index — or -1 if none matched
+// (or none of the matches could be decoded), in which case the caller leaves the primitive
+// materialless, same as before this feature existed.
+//
+// This is a heuristic, not a confirmed one-to-one link: a Mesh's own MeshGroup.Hash is a
+// material identifier, but its hash algorithm isn't understood (see mesh.go), so there's no way
+// to resolve it back to a specific texture. Matching by folder name instead — a mesh named
+// "carcano" paired with textures under "...\rifles\carcano\..." — is what's actually available,
+// confirmed against that real sample: exactly one albedo/normal pair lives under that folder,
+// matching the whole rifle mesh (which itself has only one material Group despite 5 bones), not
+// per-sub-part textures. materialCache is keyed by the mesh's own LOD-stripped base name so
+// every LOD/state variant of one mesh (which always matches the same textures) shares a single
+// embedded copy in a combined file, rather than duplicating the image bytes once per variant.
+func addMaterial(doc *gltfDocument, bin *gltfBinBuilder, meshPath string, textures []asura.TextureEntry, materialCache map[string]int) int {
+	_, base := splitLOD(meshPath)
+	base = strings.ToLower(base)
+	if idx, ok := materialCache[base]; ok {
+		return idx
+	}
+
+	idx := buildMaterial(doc, bin, meshPath, textures)
+	materialCache[base] = idx
+	return idx
+}
+
+func buildMaterial(doc *gltfDocument, bin *gltfBinBuilder, meshPath string, textures []asura.TextureEntry) int {
+	albedo, normal := meshTextures(meshPath, textures)
+	if albedo == nil && normal == nil {
+		return -1
+	}
+
+	// A non-metal, medium-rough default looks reasonable for the common case of only an
+	// albedo/normal pair being available — glTF's own spec defaults (fully metallic, fully
+	// rough, with no texture) render as a near-black mirror-like blob in Blender, which is
+	// worse than a plain flat-colored guess for a texture that failed to decode.
+	mat := gltfMaterial{
+		Name: meshPath,
+		PBRMetallicRoughness: &gltfPBRMetallicRoughness{
+			MetallicFactor: floatPtr(0), RoughnessFactor: floatPtr(0.6),
+		},
+	}
+	if albedo != nil {
+		if texIdx, ok := addImageTexture(doc, bin, *albedo); ok {
+			mat.PBRMetallicRoughness.BaseColorTexture = &gltfTextureInfo{Index: texIdx}
+		}
+	}
+	if normal != nil {
+		if texIdx, ok := addImageTexture(doc, bin, *normal); ok {
+			mat.NormalTexture = &gltfTextureInfo{Index: texIdx}
+		}
+	}
+	if mat.PBRMetallicRoughness.BaseColorTexture == nil && mat.NormalTexture == nil {
+		return -1 // matched by name, but neither texture's pixel format could be decoded
+	}
+
+	idx := len(doc.Materials)
+	doc.Materials = append(doc.Materials, mat)
+	return idx
+}
+
+// addImageTexture decodes t's DDS payload and re-encodes it as PNG — DDS isn't a valid glTF
+// image mimeType, so the pixel data has to be re-encoded to embed it, the same conversion
+// `--convert png` already performs for standalone texture extraction — then adds it to doc/bin
+// as an image+texture pair, returning the texture's index. ok is false if the payload's pixel
+// format isn't one dds.Decode supports (see its own doc comment), in which case nothing is
+// added and the caller leaves that texture slot empty rather than embedding nothing useful.
+func addImageTexture(doc *gltfDocument, bin *gltfBinBuilder, t asura.TextureEntry) (int, bool) {
+	img, err := dds.Decode(t.Data)
+	if err != nil {
+		return 0, false
+	}
+	var buf bytes.Buffer
+	enc := png.Encoder{CompressionLevel: png.BestSpeed}
+	if err := enc.Encode(&buf, img); err != nil {
+		return 0, false
+	}
+
+	imgIdx := len(doc.Images)
+	doc.Images = append(doc.Images, gltfImage{MimeType: "image/png", BufferView: bin.addView(buf.Bytes(), 0)})
+	texIdx := len(doc.Textures)
+	doc.Textures = append(doc.Textures, gltfTexture{Source: imgIdx})
+	return texIdx, true
 }
 
 // writeGLBContainer wraps doc/bin in the .glb binary container: a 12-byte header (magic

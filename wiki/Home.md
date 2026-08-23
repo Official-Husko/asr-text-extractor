@@ -15,9 +15,10 @@ a short pointer; this is where the actual detail lives.
 - [Package Extraction](Package-Extraction.md) — extracting manifest sub-files, embedded
   textures, and meshes (as binary glTF by default — a real, riggable armature for meshes with a
   matching skeleton, e.g. a rifle's bolt assembly, see
-  [Skinning](Package-Extraction.md#exporting-a-real-riggable-armature-gltf-the-default) — or
-  Wavefront OBJ via `--mesh-format obj`; LOD and destroyed-state variants of the same object are
-  [combined into one file by default](Package-Extraction.md#combining-lod-and-destroyed-state-variants-the-default))
+  [Skinning](Package-Extraction.md#exporting-a-real-riggable-armature-gltf-the-default) — with a
+  [matching material and textures embedded directly in the file](Package-Extraction.md#embedded-textures-gltf-the-default),
+  or Wavefront OBJ via `--mesh-format obj`; LOD and destroyed-state variants of the same object
+  are [combined into one file by default](Package-Extraction.md#combining-lod-and-destroyed-state-variants-the-default))
   from `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`) (extract-only, no repacking
   yet).
 - [Scan](Scan.md) — walking a whole folder and writing a text tree of every recognized file's

@@ -189,6 +189,51 @@ files. Blender 4.0.2 specifically had a real bug where these shapes came out dis
 oversized (fixed in 4.1); if the icosphere looks huge rather than just present, that's most
 likely this, not something to chase in this project's exporter.
 
+### Embedded textures (glTF, the default)
+
+A mesh's `.glb` also gets a real material with its own textures embedded directly in the file
+(no external image files to keep track of), matched by folder-name convention: a mesh named
+"carcano" is matched against textures whose path has "carcano" as an exact folder segment (e.g.
+`\graphics\weapons\rifles\carcano\carcano_body_a.tga`), the same way a real sample's texture
+layout groups an object's maps into its own same-named folder. This is a heuristic, not a
+byte-exact link — a mesh's actual material identifier (`MeshGroup.Hash`) has an unknown hash
+algorithm (see Meshes above), so there's no way to resolve it back to a specific texture
+directly, and folder-name matching is what's available instead.
+
+Within a matched folder, a texture's own filename suffix decides its role, going by the naming
+convention found across a real sample's ~3,700 texture paths (`_a`/`_d`/`_albedo`/`_diff` for a
+diffuse/albedo map — 485+ real occurrences of `_a` alone — and `_n`/`_normal`/`_norm`/`_nm` for a
+tangent-space normal map — 708+ occurrences of `_n`). Whichever of those are found get decoded
+and re-encoded as PNG (DDS isn't a valid glTF image format) and embedded as the material's
+`baseColorTexture` and `normalTexture`. A `_m`-suffixed (metallic) map, or a combined/packed map
+like `_albedoroughness`, is deliberately left unmatched — this project doesn't know whether a
+"_m" map is plain grayscale metalness or already packed to glTF's own roughness-in-green/
+metalness-in-blue `metallicRoughnessTexture` convention, and guessing wrong would look worse
+than no metallic/roughness texture at all. Every embedded material instead gets a fixed
+non-metal, medium-rough default (`metallicFactor: 0`, `roughnessFactor: 0.6`) rather than glTF's
+own spec defaults (fully metallic, fully rough with no texture), which render as a near-black
+mirror-like blob in Blender — a plain reasonable guess beats an accurate-looking wrong one here.
+
+When combining LOD/state variants into one file (the default — see below), every variant that
+shares a base name shares one embedded material and image set rather than duplicating the same
+image bytes once per LOD.
+
+**On resolution**: the embedded texture is whatever this same package file itself carries for
+that texture, which is not necessarily the game's true, full-resolution asset — this engine
+streams textures, and a level package like `h_hellbase.pc` was found to embed only a small,
+always-resident *fallback* copy (128×128 for "carcano_body_a", complete with its own small local
+mip chain down to 1×1) while the real, full 2048×2048 texture (12 mip levels) streams at runtime
+from a completely separate ~53GB pool of files (`streaming_textures/release*.pc_textures`,
+`dlc*.pc_textures`, found elsewhere in a real install) that isn't referenced from inside the
+level package at all — matching is only possible by identical filename across the two
+independent archives, and finding which of ~20 pool files holds a given texture currently means
+grepping through all of them (`grep -qa "<texture-name>" *.pc_textures`, confirmed against a
+real sample: `carcano_body_a` turned up in `release5.pc_textures`, not any of the other 21 pool
+files checked). The standalone [`texture`](Texture-Extraction.md) command already extracts a
+streaming-pool file just as well as any other standalone RSCF archive, so a higher-res version
+is always just a `texture unpack` away once you know which pool file has it — this project
+doesn't currently do that lookup or substitution automatically.
+
 ### OBJ export (`--mesh-format obj`)
 
 Plain Wavefront OBJ export is still available via `--mesh-format obj` (or `both`, to get both
@@ -340,6 +385,12 @@ repack path yet.
   effect on any other variant's mesh. Only the exact `<name>_destroyed` naming convention is
   recognized for state variants; other real naming patterns for alternate object states, if any
   exist in other samples, aren't folded in.
+- Texture-to-mesh matching (see Embedded textures above) is a folder-name heuristic, not a
+  confirmed byte-level link — a mesh with no same-named texture folder, or textures that don't
+  follow the `_a`/`_n` suffix convention, gets no embedded material at all. Metallic/roughness
+  maps aren't embedded (channel-packing convention unconfirmed), and the embedded texture is
+  whatever resolution this package itself carries, which for a streamed texture can be a small
+  fallback copy rather than the game's true resolution (see the "On resolution" note above).
 - `HSKN`'s own on-disk layout has several fields gated by a version number and a flags bitfield
   that aren't decoded, only skipped past (bone names are the exception — parsed best-effort,
   since they aren't needed for skinning to work but are useful to have). Every real `HSKN`

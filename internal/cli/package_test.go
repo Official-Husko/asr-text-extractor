@@ -27,6 +27,68 @@ func TestSplitLOD(t *testing.T) {
 	}
 }
 
+func TestTextureRole(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{`\graphics\weapons\rifles\carcano\carcano_body_a.tga`, "albedo"},
+		{`\graphics\weapons\rifles\carcano\carcano_body_n.tga`, "normal"},
+		{`\graphics\weapons\rifles\carcano\carcano_body_m.tga`, ""},          // metallic: deliberately unmatched, see doc comment
+		{`\graphics\props\light_albedoroughness.tga`, ""},                   // packed map: deliberately unmatched
+		{`\graphics\characters\skin_diffuse.tga`, "albedo"},
+		{`\graphics\characters\skin_normals.tga`, "normal"},
+		{`noextension`, ""},
+		{`no_underscore.tga`, ""},
+	}
+	for _, c := range cases {
+		if got := textureRole(c.path); got != c.want {
+			t.Errorf("textureRole(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
+func TestMeshTexturesMatchesByFolderSegment(t *testing.T) {
+	textures := []asura.TextureEntry{
+		{Path: `\graphics\weapons\rifles\carcano\carcano_body_a.tga`},
+		{Path: `\graphics\weapons\rifles\carcano\carcano_body_m.tga`},
+		{Path: `\graphics\weapons\rifles\carcano\carcano_body_n.tga`},
+		{Path: `\graphics\weapons\rifles\rifle_x\rifle_x_a.tga`}, // unrelated mesh, must not match
+	}
+
+	albedo, normal := meshTextures("carcano", textures)
+	if albedo == nil || albedo.Path != `\graphics\weapons\rifles\carcano\carcano_body_a.tga` {
+		t.Errorf("albedo = %v, want carcano_body_a", albedo)
+	}
+	if normal == nil || normal.Path != `\graphics\weapons\rifles\carcano\carcano_body_n.tga` {
+		t.Errorf("normal = %v, want carcano_body_n", normal)
+	}
+
+	// An LOD-prefixed mesh path must match the same textures as its base.
+	albedoLOD, _ := meshTextures("l1#carcano", textures)
+	if albedoLOD == nil || albedoLOD.Path != albedo.Path {
+		t.Errorf("l1#carcano albedo = %v, want the same match as the base mesh", albedoLOD)
+	}
+
+	// A mesh with no matching folder gets nothing.
+	noAlbedo, noNormal := meshTextures("unrelated_prop", textures)
+	if noAlbedo != nil || noNormal != nil {
+		t.Errorf("unrelated_prop matched (%v, %v), want no match", noAlbedo, noNormal)
+	}
+}
+
+func TestMeshTexturesRequiresExactPathSegment(t *testing.T) {
+	// "carcanoscope" contains "carcano" as a substring but isn't the same path segment — must
+	// not match a mesh named "carcano".
+	textures := []asura.TextureEntry{
+		{Path: `\graphics\weapons\scopes\carcanoscope\carcanoscope_a.tga`},
+	}
+	albedo, normal := meshTextures("carcano", textures)
+	if albedo != nil || normal != nil {
+		t.Errorf("matched (%v, %v) via substring, want an exact path-segment match only", albedo, normal)
+	}
+}
+
 func meshNamed(path string) asura.Mesh {
 	return asura.Mesh{
 		Path:      path,

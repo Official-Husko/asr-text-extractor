@@ -44,6 +44,46 @@ func parseGLB(t *testing.T, data []byte) (gltfDocument, []byte) {
 	return doc, binData
 }
 
+// buildUncompressedDDS builds a minimal, valid, solid-color 32-bit uncompressed RGBA DDS file
+// (the DDPF_RGB / no-FourCC case dds.Decode supports) — just enough for addImageTexture to
+// successfully decode and re-encode it as PNG, without needing a real game texture or a
+// BC-compressed payload.
+func buildUncompressedDDS(t *testing.T, size uint32, color [4]uint8) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	buf.WriteString("DDS ")
+	u32 := func(v uint32) { binary.Write(&buf, binary.LittleEndian, v) }
+	u32(124)                    // dwSize
+	u32(0x00081007)             // dwFlags (CAPS|HEIGHT|WIDTH|PIXELFORMAT)
+	u32(size)                   // dwHeight
+	u32(size)                   // dwWidth
+	u32(0)                      // dwPitchOrLinearSize
+	u32(0)                      // dwDepth
+	u32(1)                      // dwMipMapCount
+	buf.Write(make([]byte, 44)) // dwReserved1[11]
+	u32(32)                     // DDS_PIXELFORMAT size
+	u32(0x40)                   // DDPF_RGB
+	buf.Write(make([]byte, 4))
+	u32(32)         // RGBBitCount
+	u32(0x00ff0000) // R mask
+	u32(0x0000ff00) // G mask
+	u32(0x000000ff) // B mask
+	u32(0xff000000) // A mask
+	u32(0x1000)     // dwCaps (DDSCAPS_TEXTURE)
+	u32(0)          // dwCaps2
+	u32(0)          // dwCaps3
+	u32(0)          // dwCaps4
+	u32(0)          // dwReserved2
+
+	px := uint32(color[2]) | uint32(color[1])<<8 | uint32(color[0])<<16 | uint32(color[3])<<24
+	for i := uint32(0); i < size*size; i++ {
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], px)
+		buf.Write(b[:])
+	}
+	return buf.Bytes()
+}
+
 func simpleTestMesh() asura.Mesh {
 	return asura.Mesh{
 		Path: "widget",
@@ -58,7 +98,7 @@ func simpleTestMesh() asura.Mesh {
 
 func TestWriteGLBUnskinnedShape(t *testing.T) {
 	var buf bytes.Buffer
-	if err := writeGLB(&buf, simpleTestMesh()); err != nil {
+	if err := writeGLB(&buf, simpleTestMesh(), nil); err != nil {
 		t.Fatalf("writeGLB: %v", err)
 	}
 	doc, _ := parseGLB(t, buf.Bytes())
@@ -84,6 +124,81 @@ func TestWriteGLBUnskinnedShape(t *testing.T) {
 	if len(doc.Nodes) != 1 || doc.Nodes[0].Mesh == nil {
 		t.Fatalf("want exactly 1 mesh node, got %+v", doc.Nodes)
 	}
+	if len(doc.Materials) != 0 {
+		t.Errorf("mesh with no matching texture has %d materials, want 0", len(doc.Materials))
+	}
+}
+
+func TestWriteGLBEmbedsMatchingMaterial(t *testing.T) {
+	m := simpleTestMesh()
+	m.Path = "carcano"
+	textures := []asura.TextureEntry{
+		{Path: `\graphics\weapons\rifles\carcano\carcano_body_a.tga`, Data: buildUncompressedDDS(t, 2, [4]uint8{200, 100, 50, 255})},
+		{Path: `\graphics\weapons\rifles\carcano\carcano_body_n.tga`, Data: buildUncompressedDDS(t, 2, [4]uint8{128, 128, 255, 255})},
+		{Path: `\graphics\weapons\rifles\carcano\carcano_body_m.tga`, Data: buildUncompressedDDS(t, 2, [4]uint8{0, 0, 0, 255})}, // metallic: must NOT be embedded
+	}
+
+	var buf bytes.Buffer
+	if err := writeGLB(&buf, m, textures); err != nil {
+		t.Fatalf("writeGLB: %v", err)
+	}
+	doc, binData := parseGLB(t, buf.Bytes())
+
+	if len(doc.Materials) != 1 {
+		t.Fatalf("got %d materials, want 1", len(doc.Materials))
+	}
+	mat := doc.Materials[0]
+	if mat.PBRMetallicRoughness == nil || mat.PBRMetallicRoughness.BaseColorTexture == nil {
+		t.Fatalf("material has no baseColorTexture: %+v", mat)
+	}
+	if mat.NormalTexture == nil {
+		t.Errorf("material has no normalTexture: %+v", mat)
+	}
+	if len(doc.Images) != 2 {
+		t.Fatalf("got %d images, want 2 (albedo + normal, metallic excluded)", len(doc.Images))
+	}
+	for _, img := range doc.Images {
+		if img.MimeType != "image/png" {
+			t.Errorf("image mimeType = %q, want \"image/png\"", img.MimeType)
+		}
+		bv := doc.BufferViews[img.BufferView]
+		png := binData[bv.ByteOffset : bv.ByteOffset+bv.ByteLength]
+		if len(png) < 8 || string(png[1:4]) != "PNG" {
+			t.Errorf("embedded image bytes don't look like a PNG: % x", png[:min(len(png), 8)])
+		}
+	}
+
+	if prim := doc.Meshes[0].Primitives[0]; prim.Material == nil || *prim.Material != 0 {
+		t.Errorf("primitive.Material = %v, want a pointer to material 0", prim.Material)
+	}
+}
+
+func TestWriteGLBGroupSharesOneMaterialAcrossLODs(t *testing.T) {
+	base := simpleTestMesh()
+	base.Path = "carcano"
+	lod1 := simpleTestMesh()
+	lod1.Path = "l1#carcano"
+	textures := []asura.TextureEntry{
+		{Path: `\graphics\weapons\rifles\carcano\carcano_body_a.tga`, Data: buildUncompressedDDS(t, 2, [4]uint8{200, 100, 50, 255})},
+	}
+
+	var buf bytes.Buffer
+	if err := writeGLBGroup(&buf, "carcano", []asura.Mesh{base, lod1}, textures); err != nil {
+		t.Fatalf("writeGLBGroup: %v", err)
+	}
+	doc, _ := parseGLB(t, buf.Bytes())
+
+	if len(doc.Materials) != 1 {
+		t.Errorf("got %d materials, want 1 (shared across both LODs, not duplicated)", len(doc.Materials))
+	}
+	if len(doc.Images) != 1 {
+		t.Errorf("got %d images, want 1 (embedded once, not once per LOD)", len(doc.Images))
+	}
+	for _, mesh := range doc.Meshes {
+		if mesh.Primitives[0].Material == nil || *mesh.Primitives[0].Material != 0 {
+			t.Errorf("mesh %q primitive.Material = %v, want a pointer to the shared material 0", mesh.Name, mesh.Primitives[0].Material)
+		}
+	}
 }
 
 func TestWriteGLBGroupNestsEachVariantUnderOneBaseNode(t *testing.T) {
@@ -93,7 +208,7 @@ func TestWriteGLBGroupNestsEachVariantUnderOneBaseNode(t *testing.T) {
 	lod1.Path = "l1#carcano"
 
 	var buf bytes.Buffer
-	if err := writeGLBGroup(&buf, "carcano", []asura.Mesh{base, lod1}); err != nil {
+	if err := writeGLBGroup(&buf, "carcano", []asura.Mesh{base, lod1}, nil); err != nil {
 		t.Fatalf("writeGLBGroup: %v", err)
 	}
 	doc, _ := parseGLB(t, buf.Bytes())
@@ -136,7 +251,7 @@ func TestWriteGLBGroupKeepsEachSkinnedVariantIndependent(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	err := writeGLBGroup(&buf, "widget", []asura.Mesh{makeSkinned("widget"), makeSkinned("l1#widget")})
+	err := writeGLBGroup(&buf, "widget", []asura.Mesh{makeSkinned("widget"), makeSkinned("l1#widget")}, nil)
 	if err != nil {
 		t.Fatalf("writeGLBGroup: %v", err)
 	}
@@ -189,7 +304,7 @@ func TestWriteGLBSkinnedShape(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := writeGLB(&buf, m); err != nil {
+	if err := writeGLB(&buf, m, nil); err != nil {
 		t.Fatalf("writeGLB: %v", err)
 	}
 	doc, _ := parseGLB(t, buf.Bytes())

@@ -107,19 +107,19 @@ func newPackageUnpackCmd() *cobra.Command {
 
 			if separateLODs {
 				for _, m := range pkg.Meshes {
-					if err := writeMeshOutputs(outDir, meshFormat, m); err != nil {
+					if err := writeMeshOutputs(outDir, meshFormat, m, pkg.Textures); err != nil {
 						return err
 					}
 				}
 			} else {
 				for _, g := range groupMeshesByBase(pkg.Meshes) {
 					if len(g.meshes) == 1 {
-						if err := writeMeshOutputs(outDir, meshFormat, g.meshes[0]); err != nil {
+						if err := writeMeshOutputs(outDir, meshFormat, g.meshes[0], pkg.Textures); err != nil {
 							return err
 						}
 						continue
 					}
-					if err := writeMeshGroupOutputs(outDir, meshFormat, g.base, g.meshes); err != nil {
+					if err := writeMeshGroupOutputs(outDir, meshFormat, g.base, g.meshes, pkg.Textures); err != nil {
 						return err
 					}
 				}
@@ -184,10 +184,14 @@ func writeMeshGroupFile(outDir, ext, base string, meshes []asura.Mesh, write fun
 // writeMeshOutputs writes a single mesh through writeGLB and/or writeOBJ according to
 // meshFormat ("gltf", "obj", or "both"), printing a "wrote <path>" diagnostic per file. Used
 // directly by --separate-lods, and as the fallback in the default (combining) path for a base
-// mesh with no LOD/state siblings to combine with — see groupMeshesByBase.
-func writeMeshOutputs(outDir, meshFormat string, m asura.Mesh) error {
+// mesh with no LOD/state siblings to combine with — see groupMeshesByBase. textures is the
+// whole package's texture list, used by the glTF path to embed a matching material (see
+// gltf.go's addMaterial); the OBJ path ignores it, since OBJ export has no texture embedding.
+func writeMeshOutputs(outDir, meshFormat string, m asura.Mesh, textures []asura.TextureEntry) error {
 	if meshFormat == "gltf" || meshFormat == "both" {
-		dest, err := writeMeshFile(outDir, ".glb", m, writeGLB)
+		dest, err := writeMeshFile(outDir, ".glb", m, func(w io.Writer, m asura.Mesh) error {
+			return writeGLB(w, m, textures)
+		})
 		if err != nil {
 			return fmt.Errorf("%s: writing glTF: %w", m.Path, err)
 		}
@@ -206,9 +210,11 @@ func writeMeshOutputs(outDir, meshFormat string, m asura.Mesh) error {
 // writeMeshGroupOutputs is writeMeshOutputs's counterpart for a combined multi-variant group
 // (see groupMeshesByBase) — the default package-unpack behavior for a base mesh that has LOD
 // and/or "_destroyed" siblings.
-func writeMeshGroupOutputs(outDir, meshFormat, base string, meshes []asura.Mesh) error {
+func writeMeshGroupOutputs(outDir, meshFormat, base string, meshes []asura.Mesh, textures []asura.TextureEntry) error {
 	if meshFormat == "gltf" || meshFormat == "both" {
-		dest, err := writeMeshGroupFile(outDir, ".glb", base, meshes, writeGLBGroup)
+		dest, err := writeMeshGroupFile(outDir, ".glb", base, meshes, func(w io.Writer, base string, meshes []asura.Mesh) error {
+			return writeGLBGroup(w, base, meshes, textures)
+		})
 		if err != nil {
 			return fmt.Errorf("%s: writing glTF: %w", base, err)
 		}
@@ -311,6 +317,80 @@ func lodLabel(path string) string {
 		label += "_Destroyed"
 	}
 	return label
+}
+
+// meshTextures finds textures belonging to m's mesh path by folder-name convention: a real
+// sample shows a mesh's own textures living in a same-named folder (e.g. the "carcano" mesh's
+// diffuse/normal maps live under "...\rifles\carcano\..."), each ending in a role suffix (see
+// textureRole). Returns the first matching albedo/normal texture found (nil if neither role
+// matches) — a heuristic, not a confirmed link: this project has no reverse-engineered way to
+// resolve a Mesh's own MeshGroup.Hash (its actual material identifier) back to a specific
+// texture, so folder-name matching is what's available instead of a byte-exact one, and is used
+// by gltf.go's addMaterial to embed a texture into exported meshes.
+func meshTextures(meshPath string, textures []asura.TextureEntry) (albedo, normal *asura.TextureEntry) {
+	_, base := splitLOD(meshPath)
+	base = strings.ToLower(base)
+	for i := range textures {
+		t := &textures[i]
+		if !hasPathSegment(t.Path, base) {
+			continue
+		}
+		switch textureRole(t.Path) {
+		case "albedo":
+			if albedo == nil {
+				albedo = t
+			}
+		case "normal":
+			if normal == nil {
+				normal = t
+			}
+		}
+	}
+	return albedo, normal
+}
+
+// hasPathSegment reports whether path (backslash- or slash-separated, matching how RSCF/RSFL
+// paths are stored regardless of this tool's own host OS) has seg as one of its components,
+// case-insensitively.
+func hasPathSegment(path, seg string) bool {
+	for _, s := range strings.FieldsFunc(strings.ToLower(path), func(r rune) bool { return r == '\\' || r == '/' }) {
+		if s == seg {
+			return true
+		}
+	}
+	return false
+}
+
+// textureRole classifies a texture path by its filename suffix (the part after the last "_",
+// before the extension), using the naming convention found across a real sample's ~3,700
+// texture paths (708 "_n"-suffixed names, 485 "_a"-suffixed, among others): "albedo" for a
+// diffuse/color map, "normal" for a tangent-space normal map, "" for anything else — including
+// combined/packed maps like the real sample's "_albedoroughness"/"_ar"/"_m" (metallic) suffixes,
+// deliberately left unmatched rather than guessing at their channel layout (e.g. whether a "_m"
+// map is plain grayscale metalness or already packed to glTF's roughness-in-green/
+// metalness-in-blue convention isn't known, and assigning it to the wrong channel would produce
+// a worse result than no metallic/roughness texture at all).
+func textureRole(path string) string {
+	name := path
+	if i := strings.LastIndexAny(name, `\/`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		name = name[:i]
+	}
+	i := strings.LastIndexByte(name, '_')
+	if i < 0 {
+		return ""
+	}
+	switch name[i+1:] {
+	case "a", "d", "albedo", "diff", "diffuse":
+		return "albedo"
+	case "n", "normal", "normals", "norm", "nm":
+		return "normal"
+	default:
+		return ""
+	}
 }
 
 // writeOBJGroup combines every LOD/state variant of one base mesh (see groupMeshesByBase) into a

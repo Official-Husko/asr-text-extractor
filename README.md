@@ -16,9 +16,9 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
 - **`package`** — `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`): manifest
   sub-files, embedded textures, and meshes — extract only, as binary glTF by default (a real,
   riggable armature when a mesh has a matching skeleton — e.g. a rifle's bolt assembly, posable
-  bone-by-bone in Blender) or Wavefront `.obj` via `--mesh-format obj`; LOD and destroyed-state
-  variants of the same object are combined into one file by default (`--separate-lods` to opt
-  out)
+  bone-by-bone in Blender — with a matching diffuse/normal material embedded directly in the
+  file) or Wavefront `.obj` via `--mesh-format obj`; LOD and destroyed-state variants of the
+  same object are combined into one file by default (`--separate-lods` to opt out)
 
 It also has a **`scan`** command: walk a whole folder and write a text tree listing every
 recognized file's own entry names (sub-files, textures, meshes, strings, voice lines, ...) with
