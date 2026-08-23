@@ -98,25 +98,20 @@ func TestWriteGLBGroupNestsEachVariantUnderOneBaseNode(t *testing.T) {
 	}
 	doc, _ := parseGLB(t, buf.Bytes())
 
-	if len(doc.Scenes[0].Nodes) != 1 {
-		t.Fatalf("scene has %d root nodes, want 1 (the base-name group node)", len(doc.Scenes[0].Nodes))
+	// No synthetic container node: each variant's own top node sits directly at the scene root
+	// (Blender's glTF importer already creates one Collection per file for these), named
+	// "LOD<n>" instead of its raw path.
+	if len(doc.Scenes[0].Nodes) != 2 {
+		t.Fatalf("scene has %d root nodes, want 2 (one per variant, no container)", len(doc.Scenes[0].Nodes))
 	}
-	groupNode := doc.Nodes[doc.Scenes[0].Nodes[0]]
-	if groupNode.Name != "carcano" {
-		t.Errorf("group node name = %q, want \"carcano\"", groupNode.Name)
+	var rootNames []string
+	for _, idx := range doc.Scenes[0].Nodes {
+		rootNames = append(rootNames, doc.Nodes[idx].Name)
 	}
-	if len(groupNode.Children) != 2 {
-		t.Fatalf("group node has %d children, want 2 (one per variant)", len(groupNode.Children))
-	}
-
-	var variantNames []string
-	for _, childIdx := range groupNode.Children {
-		variantNames = append(variantNames, doc.Nodes[childIdx].Name)
-	}
-	want := []string{"carcano", "l1#carcano"}
+	want := []string{"LOD0", "LOD1"}
 	for i, w := range want {
-		if variantNames[i] != w {
-			t.Errorf("variant wrapper %d name = %q, want %q", i, variantNames[i], w)
+		if rootNames[i] != w {
+			t.Errorf("root node %d name = %q, want %q", i, rootNames[i], w)
 		}
 	}
 
@@ -131,6 +126,9 @@ func TestWriteGLBGroupKeepsEachSkinnedVariantIndependent(t *testing.T) {
 		m.Path = path
 		m.Vertices[0].BoneIDs, m.Vertices[0].BoneWeights = [8]uint8{0}, [8]uint8{255}
 		m.Skeleton = &asura.Skeleton{
+			// Every LOD of the same rigged mesh shares one skeleton, so its Name is
+			// identical across variants — exactly what used to collide once armature root
+			// nodes were named after it (see writeGLBGroup's doc comment).
 			Name:  "Widget",
 			Bones: []asura.Bone{{Name: "Body", LocalRot: [4]float32{1, 0, 0, 0}}},
 		}
@@ -146,6 +144,34 @@ func TestWriteGLBGroupKeepsEachSkinnedVariantIndependent(t *testing.T) {
 
 	if len(doc.Skins) != 2 {
 		t.Fatalf("got %d skins, want 2 (each variant keeps its own, not a shared skeleton instance)", len(doc.Skins))
+	}
+
+	// Two root nodes per skinned variant (armature root + its mesh node), 4 total — and none
+	// of the 4 should share a name, or Blender's global Object namespace would collide and
+	// auto-suffix them ".001" on import (the bug this naming scheme fixes).
+	if len(doc.Scenes[0].Nodes) != 4 {
+		t.Fatalf("scene has %d root nodes, want 4 (armature+mesh per variant)", len(doc.Scenes[0].Nodes))
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, idx := range doc.Scenes[0].Nodes {
+		name := doc.Nodes[idx].Name
+		names = append(names, name)
+		if seen[name] {
+			t.Errorf("duplicate top-level node name %q among %v (would collide in Blender)", name, names)
+		}
+		seen[name] = true
+	}
+	wantArmatures := map[string]bool{"LOD0": true, "LOD1": true}
+	for _, n := range names {
+		if wantArmatures[n] {
+			delete(wantArmatures, n)
+		} else if n != "LOD0 Mesh" && n != "LOD1 Mesh" {
+			t.Errorf("unexpected top-level node name %q, want one of LOD0/LOD1/LOD0 Mesh/LOD1 Mesh", n)
+		}
+	}
+	if len(wantArmatures) != 0 {
+		t.Errorf("missing armature root name(s): %v (got %v)", wantArmatures, names)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -290,13 +291,35 @@ func groupMeshesByBase(meshes []asura.Mesh) []meshLODGroup {
 	return kept
 }
 
+// lodLabel computes a clean "LOD<n>" (or "LOD<n>_Destroyed") display label for a mesh path,
+// replacing its raw "l1#name"/"name_destroyed" form when writing a combined multi-variant file
+// (see writeGLBGroup/writeOBJGroup) — the un-prefixed base/LOD0 variant becomes "LOD0" rather
+// than reusing its own bare name, which used to collide with a combined file's own former
+// container-node name and get auto-suffixed ".001" by Blender on import. An "lN" prefix that
+// isn't of that exact numeric shape (not expected in any real sample seen) falls back to "LOD0"
+// rather than guessing further.
+func lodLabel(path string) string {
+	lod, base := splitLOD(path)
+	n := 0
+	if lod != "" {
+		if parsed, err := strconv.Atoi(strings.TrimPrefix(lod, "l")); err == nil {
+			n = parsed
+		}
+	}
+	label := fmt.Sprintf("LOD%d", n)
+	if strings.HasSuffix(base, destroyedSuffix) {
+		label += "_Destroyed"
+	}
+	return label
+}
+
 // writeOBJGroup combines every LOD/state variant of one base mesh (see groupMeshesByBase) into a
 // single OBJ file — the default package-unpack behavior, matching writeGLBGroup — instead of one
 // file per variant. OBJ has no scene-graph nesting and its "v"/"vt" indices are shared across the
 // whole file, so each variant's vertex data is appended (with face indices offset by every prior
 // variant's vertex count) and each variant's own parts (or the whole variant, if it has no
-// matching skeleton) are labeled by their full variant path (e.g. "l1#carcano" or
-// "l1#carcano_Bolt") rather than just the bone name writeOBJ alone uses, so multiple variants'
+// matching skeleton) are labeled by their "LOD<n>" display label (see lodLabel — e.g. "LOD1" or
+// "LOD1_Bolt") rather than just the bone name writeOBJ alone uses, so multiple variants'
 // same-named bones/parts stay distinguishable and individually selectable once imported.
 func writeOBJGroup(w io.Writer, _ string, meshes []asura.Mesh) error {
 	buf := bufio.NewWriter(w)
@@ -314,11 +337,12 @@ func writeOBJGroup(w io.Writer, _ string, meshes []asura.Mesh) error {
 			}
 		}
 
+		meshLabel := lodLabel(m.Path)
 		names, indices := groupTrianglesByBone(m)
 		for _, name := range names {
-			label := m.Path
+			label := meshLabel
 			if name != "" {
-				label = m.Path + "_" + name
+				label = meshLabel + "_" + name
 			}
 			if _, err := fmt.Fprintf(buf, "o %s\ng %s\n", label, label); err != nil {
 				return err

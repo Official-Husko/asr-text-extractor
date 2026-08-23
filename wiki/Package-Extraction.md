@@ -216,13 +216,29 @@ output file for no benefit.
 
 For `.glb` output, each variant keeps its own independent geometry, armature, and skin — variants
 aren't merged into one mesh or rigged to a shared skeleton instance, since that would need new,
-cross-variant assumptions this project hasn't validated against real data. Opened in Blender,
-each variant nests as its own object (or armature) under one shared parent object named after the
-base mesh, so the whole LOD/state chain for one object lives in one collection instead of being
-scattered across files that are easy to lose track of. For `.obj` output, since OBJ has no
-scene-graph nesting, each variant's parts are instead labeled by their full variant path (e.g.
-`l1#carcano_Bolt` rather than just `Bolt`) so same-named parts across different variants stay
-distinguishable and individually selectable once imported.
+cross-variant assumptions this project hasn't validated against real data. There's no synthetic
+"container" node wrapping the variants inside the file: each variant's own object (or armature)
+sits directly at the scene root, since Blender's glTF importer already creates one Collection per
+imported file containing every top-level object — that Collection *is* the natural grouping for a
+combined file's LOD/state chain, without this project inventing its own node-based substitute for
+one.
+
+Each variant is renamed from its raw path (`l1#carcano`, `bulb_b_destroyed`) to a clean `LOD<n>`
+label (the un-prefixed base variant becomes `LOD0`), with a `_Destroyed` suffix for a folded-in
+destroyed-state chain (`LOD0_Destroyed`, `LOD1_Destroyed`, ...). This isn't just cosmetic: every
+LOD of the same rigged mesh shares one skeleton, so every one of (say) "carcano"'s 5 LOD armatures
+would otherwise be named "Carcano" identically — Blender's Object namespace is global across every
+object type, so same-named top-level objects collide and get auto-suffixed `.001`, `.002`, ... on
+import (a real symptom hit during development: the un-prefixed base variant importing as
+`chandelier_long_base.001` instead of a clean name, because it happened to share a name with this
+feature's own first-draft container node). A skinned variant's mesh object (a separate Blender
+object from its armature, parented to it) is named `LOD<n> Mesh` so it doesn't in turn collide
+with its own armature's `LOD<n>` name in that same global namespace.
+
+For `.obj` output, since OBJ has no scene-graph nesting, each variant's parts are labeled with the
+same `LOD<n>` scheme instead of the bone name alone (e.g. `LOD1_Bolt` rather than just `Bolt`), so
+same-named parts across different variants stay distinguishable and individually selectable once
+imported.
 
 Pass `--separate-lods` to opt back out and restore the original one-file-per-variant layout (550
 mesh files for the same real sample) — useful for a workflow that specifically wants to inspect

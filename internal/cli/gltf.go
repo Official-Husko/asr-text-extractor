@@ -225,32 +225,46 @@ func writeGLB(w io.Writer, m asura.Mesh) error {
 // .../l6#chandelier_long_base.glb" style sprawl that motivated this). Each variant keeps its own
 // independent geometry, armature, and skin (see addMeshNodes) — variants aren't merged into one
 // mesh or rigged to a shared skeleton instance, since that would need new, unvalidated
-// cross-variant assumptions this project hasn't checked against real data. Each variant's own
-// node(s) are wrapped under one node named after that variant's own path (e.g. "l1#carcano" or
-// "bulb_b_destroyed"), and all those wrapper nodes sit under one top-level node named after the
-// shared base name, so Blender shows one clean hierarchy (base name -> variant -> mesh/armature)
-// instead of several same-named, hard-to-tell-apart top-level objects spread across files.
-func writeGLBGroup(w io.Writer, baseName string, meshes []asura.Mesh) error {
+// cross-variant assumptions this project hasn't checked against real data.
+//
+// There is deliberately no synthetic "container" node wrapping the variants (an earlier version
+// of this function had one, plus a second wrapper per variant): each variant's own node(s) sit
+// directly at the scene root, one LOD per top-level object. Blender's glTF importer already
+// creates one Collection per imported file containing every top-level scene object, so that's
+// what puts each LOD in "its own place with its own properties" for a Blender-focused workflow
+// — no need for this project to invent its own node-based substitute for a Collection.
+//
+// Each variant's top-level node(s) are renamed to "LOD<n>" (see lodLabel) instead of keeping
+// its own raw path ("l1#carcano") or, for a skinned variant, its skeleton's own name. This isn't
+// just cosmetic: every LOD of the same rigged mesh shares one HSKN skeleton, so every one of
+// (say) "carcano"'s 5 LOD armatures would otherwise be named "Carcano" identically — Blender's
+// Object namespace is global across every object type, so same-named top-level objects collide
+// and get auto-suffixed ".001", ".002", ... on import (the exact bug that motivated this
+// rename: an un-prefixed base mesh sharing its combined file's own former container-node name
+// came in as "<name>.001" instead of a clean name). A skinned variant's mesh object (a separate
+// Blender Object from its armature, parented to it) is named "LOD<n> Mesh" so it doesn't in turn
+// collide with its own armature's "LOD<n>" name in that same global namespace.
+func writeGLBGroup(w io.Writer, _ string, meshes []asura.Mesh) error {
 	bin := &gltfBinBuilder{}
 	doc := gltfDocument{
 		Asset:  gltfAsset{Version: "2.0", Generator: "asr-text-extractor"},
 		Scenes: []gltfScene{{}},
 	}
 
-	var wrappers []int
+	var roots []int
 	for _, m := range meshes {
 		nodes, err := addMeshNodes(&doc, bin, m)
 		if err != nil {
 			return err
 		}
-		wrapperIdx := len(doc.Nodes)
-		doc.Nodes = append(doc.Nodes, gltfNode{Name: m.Path, Children: nodes})
-		wrappers = append(wrappers, wrapperIdx)
+		label := lodLabel(m.Path)
+		doc.Nodes[nodes[0]].Name = label
+		if len(nodes) > 1 {
+			doc.Nodes[nodes[1]].Name = label + " Mesh"
+		}
+		roots = append(roots, nodes...)
 	}
-
-	groupIdx := len(doc.Nodes)
-	doc.Nodes = append(doc.Nodes, gltfNode{Name: baseName, Children: wrappers})
-	doc.Scenes[0].Nodes = []int{groupIdx}
+	doc.Scenes[0].Nodes = roots
 
 	return writeGLBContainer(w, doc, bin)
 }

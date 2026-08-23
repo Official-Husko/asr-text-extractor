@@ -43,6 +43,24 @@ func groupBases(groups []meshLODGroup) []string {
 	return bases
 }
 
+func TestLODLabel(t *testing.T) {
+	cases := []struct {
+		path string
+		want string
+	}{
+		{"carcano", "LOD0"},
+		{"l1#carcano", "LOD1"},
+		{"l6#chandelier_long_base", "LOD6"},
+		{"bulb_b_destroyed", "LOD0_Destroyed"},
+		{"l1#bulb_b_destroyed", "LOD1_Destroyed"},
+	}
+	for _, c := range cases {
+		if got := lodLabel(c.path); got != c.want {
+			t.Errorf("lodLabel(%q) = %q, want %q", c.path, got, c.want)
+		}
+	}
+}
+
 func TestGroupMeshesByBaseCollectsLODs(t *testing.T) {
 	meshes := []asura.Mesh{
 		meshNamed("chandelier_long_base"),
@@ -130,10 +148,10 @@ func TestWriteOBJGroupOffsetsVertexIndices(t *testing.T) {
 		t.Errorf("got %d \"v\" lines, want 6 (3 per mesh)", vCount)
 	}
 
-	if !strings.Contains(out, "o carcano\ng carcano\n") {
-		t.Errorf("missing base mesh's o/g block; output:\n%s", out)
+	if !strings.Contains(out, "o LOD0\ng LOD0\n") {
+		t.Errorf("missing base mesh's o/g block (want \"LOD0\", not its raw path); output:\n%s", out)
 	}
-	if !strings.Contains(out, "o l1#carcano\ng l1#carcano\n") {
+	if !strings.Contains(out, "o LOD1\ng LOD1\n") {
 		t.Errorf("missing LOD1's o/g block; output:\n%s", out)
 	}
 
