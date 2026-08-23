@@ -128,11 +128,17 @@ unchanged — this is automatic and free for meshes that don't need it.
 that this tool doesn't fully decode (only what's needed to reach the bind-pose transform data);
 per-bone names are parsed best-effort past that point but aren't required for skinning to work.
 
-Exported OBJ files split into named `g` groups by bone (e.g. `g Body`, `g Bolt`) whenever a
+Exported OBJ files split into separate parts by bone (e.g. Body, Bolt, Bolt_Handle) whenever a
 skeleton was matched — a *different* grouping than the mesh's own material `Groups` (which
 "carcano" has only one of, despite having five distinct bones) — so individual rigid sub-parts
-can be selected/hidden/moved independently in Blender. Meshes with no matching skeleton export
-as a single ungrouped mesh, same as before.
+can be selected/hidden/moved independently in Blender. Each part gets both an `o` (object) and
+a `g` (group) declaration — `o` is what actually makes Blender's OBJ importer create separate,
+independently selectable objects; `g` alone was tried first and didn't (landed everything in
+one combined mesh named after the file, inside a same-named collection — a real result from
+testing, not a guess) — and triangles are grouped and reordered so each part's block is fully
+contiguous in the file (each part name appears exactly once), not interleaved with others,
+since that's the form most OBJ importers handle reliably. Meshes with no matching skeleton
+export as a single ungrouped mesh, same as before.
 
 ### A note on axis orientation
 

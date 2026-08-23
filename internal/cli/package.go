@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -133,11 +134,15 @@ func newPackageUnpackCmd() *cobra.Command {
 // geometry alone.
 //
 // When m.BoneNames is populated (a matching skeleton was found — see skeleton.go), triangles
-// are split into named "g" groups by their first vertex's primary bone (BoneIDs[0]) — e.g. a
-// rifle's Body/Bolt/Trigger — independently of Mesh.Groups (that's the mesh's own *material*
-// grouping, unrelated: a real sample has one material group but five distinct bones). A group
-// switch mid-triangle-list just emits another "g" line; OBJ doesn't require groups to be
-// declared up front or triangles to already be sorted by group.
+// are split by their first vertex's primary bone (BoneIDs[0]) — e.g. a rifle's Body/Bolt/
+// Trigger — independently of Mesh.Groups (that's the mesh's own *material* grouping, unrelated:
+// a real sample has one material group but five distinct bones). Each part switch emits both an
+// "o" (object) and a "g" (group) line: "o" is what makes Blender's OBJ importer split the
+// result into separate, independently selectable objects — "g" alone often doesn't, landing
+// everything in one combined object with named vertex groups instead, depending on import
+// settings — so both are written for reliability across Blender versions/settings. A part
+// switch mid-triangle-list just emits new "o"/"g" lines; OBJ doesn't require these to be
+// declared up front or triangles to already be sorted by part.
 func writeOBJ(w io.Writer, m asura.Mesh) error {
 	buf := bufio.NewWriter(w)
 	for _, v := range m.Vertices {
@@ -151,28 +156,71 @@ func writeOBJ(w io.Writer, m asura.Mesh) error {
 			return err
 		}
 	}
-	lastGroup := ""
-	for _, t := range m.Triangles {
-		if len(m.BoneNames) > 0 {
-			boneID := int(m.Vertices[t[0]].BoneIDs[0])
-			group := fmt.Sprintf("bone_%d", boneID)
-			if boneID >= 0 && boneID < len(m.BoneNames) && m.BoneNames[boneID] != "" {
-				group = m.BoneNames[boneID]
-			}
-			if group != lastGroup {
-				if _, err := fmt.Fprintf(buf, "g %s\n", group); err != nil {
-					return err
-				}
-				lastGroup = group
+
+	// Group triangles by part (primary bone) and sort so each part's "o"/"g" block is fully
+	// contiguous — writing them in original (interleaved) triangle order technically still
+	// respects OBJ's rule that a name switch just starts a new block, but repeating the same
+	// object name multiple times non-contiguously is exactly the kind of thing real-world
+	// importers handle inconsistently (some silently merge same-named blocks regardless of
+	// order, some don't, some auto-suffix repeats as separate ".001" objects).
+	names, indices := groupTrianglesByBone(m)
+	for _, name := range names {
+		if name != "" {
+			if _, err := fmt.Fprintf(buf, "o %s\ng %s\n", name, name); err != nil {
+				return err
 			}
 		}
-		// Flipped relative to the raw triangle order — see objAxes's doc comment for why.
-		a, b, c := t[0]+1, t[2]+1, t[1]+1 // OBJ indices are 1-based
-		if _, err := fmt.Fprintf(buf, "f %d/%d %d/%d %d/%d\n", a, a, b, b, c, c); err != nil {
-			return err
+		for _, ti := range indices[name] {
+			t := m.Triangles[ti]
+			// Flipped relative to the raw triangle order — see objAxes's doc comment for why.
+			a, b, c := t[0]+1, t[2]+1, t[1]+1 // OBJ indices are 1-based
+			if _, err := fmt.Fprintf(buf, "f %d/%d %d/%d %d/%d\n", a, a, b, b, c, c); err != nil {
+				return err
+			}
 		}
 	}
 	return buf.Flush()
+}
+
+// groupTrianglesByBone buckets a mesh's triangle indices by the part (bone) name each belongs
+// to, keyed by its first vertex's primary bone (BoneIDs[0]) — see writeOBJ. names is ordered by
+// ascending bone ID for a stable, sensible file order (e.g. a rifle's Body before its Bolt).
+// If m.BoneNames is empty (no matching skeleton found), returns a single "" group holding every
+// triangle in its original order, so writeOBJ skips the "o"/"g" lines entirely.
+func groupTrianglesByBone(m asura.Mesh) (names []string, indices map[string][]int) {
+	if len(m.BoneNames) == 0 {
+		all := make([]int, len(m.Triangles))
+		for i := range all {
+			all[i] = i
+		}
+		return []string{""}, map[string][]int{"": all}
+	}
+
+	indices = make(map[string][]int)
+	order := make([]int, 0, len(m.BoneNames))
+	seen := make(map[string]bool)
+	for i, t := range m.Triangles {
+		boneID := int(m.Vertices[t[0]].BoneIDs[0])
+		name := fmt.Sprintf("bone_%d", boneID)
+		if boneID >= 0 && boneID < len(m.BoneNames) && m.BoneNames[boneID] != "" {
+			name = m.BoneNames[boneID]
+		}
+		indices[name] = append(indices[name], i)
+		if !seen[name] {
+			seen[name] = true
+			order = append(order, boneID)
+		}
+	}
+	sort.Ints(order)
+	names = make([]string, len(order))
+	for i, boneID := range order {
+		name := fmt.Sprintf("bone_%d", boneID)
+		if boneID >= 0 && boneID < len(m.BoneNames) && m.BoneNames[boneID] != "" {
+			name = m.BoneNames[boneID]
+		}
+		names[i] = name
+	}
+	return names, indices
 }
 
 // objAxes converts a decoded Mesh position into OBJ's own coordinate convention. As of this
