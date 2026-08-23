@@ -194,6 +194,40 @@ grouped and reordered so each part's block is fully contiguous in the file (each
 appears exactly once), not interleaved with others, since that's the form most OBJ importers
 handle reliably. Meshes with no matching skeleton export as a single ungrouped mesh.
 
+### Combining LOD and destroyed-state variants (the default)
+
+A real level package's meshes include many `l1#`/`l2#`/.../`l6#`-prefixed LOD (level-of-detail)
+variants of the same base object, plus, for destructible props, a separate `<name>_destroyed`
+mesh (and that mesh's own LOD variants) — a real sample has a 7-way LOD chain for one chandelier
+alone, each variant previously landing in its own separate file (`chandelier_long_base.glb`,
+`l1#chandelier_long_base.glb`, ..., `l6#chandelier_long_base.glb`). By default, `package unpack`
+instead combines every variant of the same base object into one file: all LOD siblings sharing a
+base name (stripping the `l1#`/`l2#`/... prefix), plus a `<base>_destroyed` counterpart when one
+exists for that base — folded in exactly like an extra LOD, including *that* mesh's own LOD
+variants. A real sample confirms both parts of this: `chandelier_long_base.glb` alone replaces 7
+separate files, and `bulb_b.glb` bundles the intact bulb's 4 LOD levels with its
+`bulb_b_destroyed` broken-state variant, cutting a real package's total mesh file count from 550
+down to 272.
+
+A `<name>_destroyed` mesh with **no** matching `<name>` counterpart in the same package (i.e. a
+prop that's only ever seen in its destroyed state) is left as its own untouched, separately-named
+file — folding it under a base name that doesn't otherwise exist in the package would misname its
+output file for no benefit.
+
+For `.glb` output, each variant keeps its own independent geometry, armature, and skin — variants
+aren't merged into one mesh or rigged to a shared skeleton instance, since that would need new,
+cross-variant assumptions this project hasn't validated against real data. Opened in Blender,
+each variant nests as its own object (or armature) under one shared parent object named after the
+base mesh, so the whole LOD/state chain for one object lives in one collection instead of being
+scattered across files that are easy to lose track of. For `.obj` output, since OBJ has no
+scene-graph nesting, each variant's parts are instead labeled by their full variant path (e.g.
+`l1#carcano_Bolt` rather than just `Bolt`) so same-named parts across different variants stay
+distinguishable and individually selectable once imported.
+
+Pass `--separate-lods` to opt back out and restore the original one-file-per-variant layout (550
+mesh files for the same real sample) — useful for a workflow that specifically wants to inspect
+or import a single LOD level in isolation, without pulling in every other variant's geometry.
+
 ### A note on axis orientation
 
 Exported positions currently get **no** transform (raw, as decoded) — the triangle winding
@@ -216,7 +250,7 @@ derivation.
 ## Commands
 
 ```text
-asr-text-extractor package unpack <file> [output-dir] [--convert dds|png] [--mesh-format gltf|obj|both]
+asr-text-extractor package unpack <file> [output-dir] [--convert dds|png] [--mesh-format gltf|obj|both] [--separate-lods]
 ```
 
 Extracts:
@@ -230,10 +264,12 @@ Extracts:
   `<output-dir>/meshes/<name>.glb` by default — binary glTF 2.0, importable directly into
   Blender or any other modern 3D tool. Meshes with a matched skeleton (see Skinning above) come
   out as a real, riggable armature with individually posable bones, not just static geometry.
-  Pass `--mesh-format obj` (or `both`, for both formats) to also/instead get a plain Wavefront
-  OBJ — no armature, but usable in tools that don't handle glTF skinning; see OBJ export above.
-  Neither format writes normals (`Mesh` doesn't decode any) — use Blender's Shade Smooth /
-  Recalculate Normals after import.
+  LOD variants and destroyed-state counterparts of the same base object are combined into that
+  one file by default (see "Combining LOD and destroyed-state variants" above); pass
+  `--separate-lods` for the original one-file-per-variant layout. Pass `--mesh-format obj` (or
+  `both`, for both formats) to also/instead get a plain Wavefront OBJ — no armature, but usable
+  in tools that don't handle glTF skinning; see OBJ export above. Neither format writes normals
+  (`Mesh` doesn't decode any) — use Blender's Shade Smooth / Recalculate Normals after import.
 
 If `output-dir` is omitted, it defaults to the input's base name. Creates subdirectories as
 needed, and prints a one-line diagnostic to stderr (`Entries: N  Textures: N  Meshes: N`)
@@ -244,7 +280,8 @@ asr-text-extractor package unpack h_hellbase.pc
 # -> h_hellbase/files/LevelExportTemp0/ZA/Dust/ZA4_Mist_UnderLights_Small.pfx
 # -> h_hellbase/textures/graphics/za4/rocks/scan_rock_cluster_01_ar.dds
 # -> h_hellbase/meshes/ammo_crate_insideboxes_c.glb
-# -> ... (282 files, 2502 textures, 550 meshes)
+# -> h_hellbase/meshes/chandelier_long_base.glb  (bundles that object's 7 LOD variants)
+# -> ... (282 files, 2502 textures, 550 meshes decoded into 272 combined mesh files)
 
 asr-text-extractor package unpack h_hellbase.pc_entdata
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.snd
@@ -271,6 +308,11 @@ repack path yet.
 - OBJ export has no concept of a skeleton or vertex groups at all — multi-part meshes are
   instead split into separate, independently selectable-but-not-posable objects by bone (see OBJ
   export above). Use the default glTF export for anything that needs actual posing/rigging.
+- Combined LOD/destroyed-state files nest each variant as its own independent armature/skin
+  rather than sharing one skeleton instance across variants — posing one LOD's bone has no
+  effect on any other variant's mesh. Only the exact `<name>_destroyed` naming convention is
+  recognized for state variants; other real naming patterns for alternate object states, if any
+  exist in other samples, aren't folded in.
 - `HSKN`'s own on-disk layout has several fields gated by a version number and a flags bitfield
   that aren't decoded, only skipped past (bone names are the exception — parsed best-effort,
   since they aren't needed for skinning to work but are useful to have). Every real `HSKN`

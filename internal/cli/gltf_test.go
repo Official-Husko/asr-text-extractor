@@ -86,6 +86,69 @@ func TestWriteGLBUnskinnedShape(t *testing.T) {
 	}
 }
 
+func TestWriteGLBGroupNestsEachVariantUnderOneBaseNode(t *testing.T) {
+	base := simpleTestMesh()
+	base.Path = "carcano"
+	lod1 := simpleTestMesh()
+	lod1.Path = "l1#carcano"
+
+	var buf bytes.Buffer
+	if err := writeGLBGroup(&buf, "carcano", []asura.Mesh{base, lod1}); err != nil {
+		t.Fatalf("writeGLBGroup: %v", err)
+	}
+	doc, _ := parseGLB(t, buf.Bytes())
+
+	if len(doc.Scenes[0].Nodes) != 1 {
+		t.Fatalf("scene has %d root nodes, want 1 (the base-name group node)", len(doc.Scenes[0].Nodes))
+	}
+	groupNode := doc.Nodes[doc.Scenes[0].Nodes[0]]
+	if groupNode.Name != "carcano" {
+		t.Errorf("group node name = %q, want \"carcano\"", groupNode.Name)
+	}
+	if len(groupNode.Children) != 2 {
+		t.Fatalf("group node has %d children, want 2 (one per variant)", len(groupNode.Children))
+	}
+
+	var variantNames []string
+	for _, childIdx := range groupNode.Children {
+		variantNames = append(variantNames, doc.Nodes[childIdx].Name)
+	}
+	want := []string{"carcano", "l1#carcano"}
+	for i, w := range want {
+		if variantNames[i] != w {
+			t.Errorf("variant wrapper %d name = %q, want %q", i, variantNames[i], w)
+		}
+	}
+
+	if len(doc.Meshes) != 2 {
+		t.Errorf("got %d meshes, want 2 (one per variant, not merged)", len(doc.Meshes))
+	}
+}
+
+func TestWriteGLBGroupKeepsEachSkinnedVariantIndependent(t *testing.T) {
+	makeSkinned := func(path string) asura.Mesh {
+		m := simpleTestMesh()
+		m.Path = path
+		m.Vertices[0].BoneIDs, m.Vertices[0].BoneWeights = [8]uint8{0}, [8]uint8{255}
+		m.Skeleton = &asura.Skeleton{
+			Name:  "Widget",
+			Bones: []asura.Bone{{Name: "Body", LocalRot: [4]float32{1, 0, 0, 0}}},
+		}
+		return m
+	}
+
+	var buf bytes.Buffer
+	err := writeGLBGroup(&buf, "widget", []asura.Mesh{makeSkinned("widget"), makeSkinned("l1#widget")})
+	if err != nil {
+		t.Fatalf("writeGLBGroup: %v", err)
+	}
+	doc, _ := parseGLB(t, buf.Bytes())
+
+	if len(doc.Skins) != 2 {
+		t.Fatalf("got %d skins, want 2 (each variant keeps its own, not a shared skeleton instance)", len(doc.Skins))
+	}
+}
+
 func TestWriteGLBSkinnedShape(t *testing.T) {
 	m := simpleTestMesh()
 	m.Vertices[0].BoneIDs, m.Vertices[0].BoneWeights = [8]uint8{0}, [8]uint8{255}

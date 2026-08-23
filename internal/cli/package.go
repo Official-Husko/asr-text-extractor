@@ -29,6 +29,7 @@ func newPackageCmd() *cobra.Command {
 func newPackageUnpackCmd() *cobra.Command {
 	var convert string
 	var meshFormat string
+	var separateLODs bool
 	cmd := &cobra.Command{
 		Use:   "unpack <file> [output-dir]",
 		Short: "Extract every manifest-referenced sub-file and embedded texture from a level package",
@@ -103,20 +104,23 @@ func newPackageUnpackCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "%d of %d textures skipped (unsupported pixel format)\n", skipped, len(pkg.Textures))
 			}
 
-			for _, m := range pkg.Meshes {
-				if meshFormat == "gltf" || meshFormat == "both" {
-					dest, err := writeMeshFile(outDir, ".glb", m, writeGLB)
-					if err != nil {
-						return fmt.Errorf("%s: writing glTF: %w", m.Path, err)
+			if separateLODs {
+				for _, m := range pkg.Meshes {
+					if err := writeMeshOutputs(outDir, meshFormat, m); err != nil {
+						return err
 					}
-					fmt.Fprintln(os.Stderr, "wrote", dest)
 				}
-				if meshFormat == "obj" || meshFormat == "both" {
-					dest, err := writeMeshFile(outDir, ".obj", m, writeOBJ)
-					if err != nil {
-						return fmt.Errorf("%s: writing OBJ: %w", m.Path, err)
+			} else {
+				for _, g := range groupMeshesByBase(pkg.Meshes) {
+					if len(g.meshes) == 1 {
+						if err := writeMeshOutputs(outDir, meshFormat, g.meshes[0]); err != nil {
+							return err
+						}
+						continue
 					}
-					fmt.Fprintln(os.Stderr, "wrote", dest)
+					if err := writeMeshGroupOutputs(outDir, meshFormat, g.base, g.meshes); err != nil {
+						return err
+					}
 				}
 			}
 			return nil
@@ -126,6 +130,8 @@ func newPackageUnpackCmd() *cobra.Command {
 		"output image format for embedded textures: dds (raw, default, always succeeds) or png (decoded, lossless; entries in an unsupported pixel format are skipped with a warning)")
 	cmd.Flags().StringVar(&meshFormat, "mesh-format", "gltf",
 		"output format for meshes: gltf (default; a real Blender-importable skinned armature for meshes with a matching skeleton, letting rigid sub-parts like a rifle's bolt be independently selected/posed by bone), obj (a plain, unrigged mesh — multi-part meshes are instead split into per-part o/g groups, for tools/workflows that don't handle glTF skinning), or both")
+	cmd.Flags().BoolVar(&separateLODs, "separate-lods", false,
+		"write each LOD variant (l1#, l2#, ...) of a mesh, and any \"<name>_destroyed\" counterpart, to its own file instead of combining every variant of the same base mesh into one file (the default)")
 	return cmd
 }
 
@@ -150,6 +156,185 @@ func writeMeshFile(outDir, ext string, m asura.Mesh, write func(io.Writer, asura
 		return "", closeErr
 	}
 	return dest, nil
+}
+
+// writeMeshGroupFile is writeMeshFile's counterpart for a combined multi-variant file: creates
+// <outDir>/meshes/<base-with-ext> and calls write with the whole variant group.
+func writeMeshGroupFile(outDir, ext, base string, meshes []asura.Mesh, write func(io.Writer, string, []asura.Mesh) error) (string, error) {
+	dest := filepath.Join(outDir, "meshes", relPathWithExt(base, ext))
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return "", err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return "", err
+	}
+	err = write(f, base, meshes)
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return dest, nil
+}
+
+// writeMeshOutputs writes a single mesh through writeGLB and/or writeOBJ according to
+// meshFormat ("gltf", "obj", or "both"), printing a "wrote <path>" diagnostic per file. Used
+// directly by --separate-lods, and as the fallback in the default (combining) path for a base
+// mesh with no LOD/state siblings to combine with — see groupMeshesByBase.
+func writeMeshOutputs(outDir, meshFormat string, m asura.Mesh) error {
+	if meshFormat == "gltf" || meshFormat == "both" {
+		dest, err := writeMeshFile(outDir, ".glb", m, writeGLB)
+		if err != nil {
+			return fmt.Errorf("%s: writing glTF: %w", m.Path, err)
+		}
+		fmt.Fprintln(os.Stderr, "wrote", dest)
+	}
+	if meshFormat == "obj" || meshFormat == "both" {
+		dest, err := writeMeshFile(outDir, ".obj", m, writeOBJ)
+		if err != nil {
+			return fmt.Errorf("%s: writing OBJ: %w", m.Path, err)
+		}
+		fmt.Fprintln(os.Stderr, "wrote", dest)
+	}
+	return nil
+}
+
+// writeMeshGroupOutputs is writeMeshOutputs's counterpart for a combined multi-variant group
+// (see groupMeshesByBase) — the default package-unpack behavior for a base mesh that has LOD
+// and/or "_destroyed" siblings.
+func writeMeshGroupOutputs(outDir, meshFormat, base string, meshes []asura.Mesh) error {
+	if meshFormat == "gltf" || meshFormat == "both" {
+		dest, err := writeMeshGroupFile(outDir, ".glb", base, meshes, writeGLBGroup)
+		if err != nil {
+			return fmt.Errorf("%s: writing glTF: %w", base, err)
+		}
+		fmt.Fprintln(os.Stderr, "wrote", dest)
+	}
+	if meshFormat == "obj" || meshFormat == "both" {
+		dest, err := writeMeshGroupFile(outDir, ".obj", base, meshes, writeOBJGroup)
+		if err != nil {
+			return fmt.Errorf("%s: writing OBJ: %w", base, err)
+		}
+		fmt.Fprintln(os.Stderr, "wrote", dest)
+	}
+	return nil
+}
+
+// meshLODGroup is one group of mesh variants sharing a base name — see groupMeshesByBase.
+type meshLODGroup struct {
+	base   string
+	meshes []asura.Mesh
+}
+
+// splitLOD splits a mesh path into its LOD prefix (e.g. "l1", or "" for the base/LOD0 variant)
+// and base name (e.g. "carcano") — the same "l1#carcano" convention pkg/asura/package.go's own
+// meshBaseName strips when matching a mesh to its skeleton.
+func splitLOD(path string) (lod, base string) {
+	if before, after, ok := strings.Cut(path, "#"); ok {
+		return before, after
+	}
+	return "", path
+}
+
+// destroyedSuffix marks a mesh as a broken/destructible-state counterpart of a plain base mesh
+// with the same name minus this suffix (e.g. "bulb_b_destroyed" alongside "bulb_b") — a
+// user-observed real-sample naming convention, folded into the same group as its healthy
+// counterpart by groupMeshesByBase, the same way an "l1#"/"l2#"/... LOD prefix is.
+const destroyedSuffix = "_destroyed"
+
+// groupMeshesByBase groups meshes that belong in the same combined output file: every LOD
+// variant sharing one base name (see splitLOD — e.g. "chandelier_long_base" and its
+// "l1#chandelier_long_base".."l6#chandelier_long_base" siblings), plus, when both exist, a
+// "<base>_destroyed" group folded into its healthy "<base>" counterpart (including that
+// destroyed mesh's own LOD variants, if any). A "<name>_destroyed" mesh with no healthy
+// "<name>" counterpart in this package is left as its own standalone group, untouched — folding
+// it under a name that doesn't otherwise exist here would misname its output file for no
+// benefit. Order is preserved throughout (both across groups and within one) rather than
+// re-sorted, since real samples already list a base mesh immediately followed by its LOD
+// variants in ascending order.
+func groupMeshesByBase(meshes []asura.Mesh) []meshLODGroup {
+	index := make(map[string]int)
+	var groups []meshLODGroup
+	for _, m := range meshes {
+		_, base := splitLOD(m.Path)
+		if i, ok := index[base]; ok {
+			groups[i].meshes = append(groups[i].meshes, m)
+			continue
+		}
+		index[base] = len(groups)
+		groups = append(groups, meshLODGroup{base: base, meshes: []asura.Mesh{m}})
+	}
+
+	merged := make([]bool, len(groups))
+	for i, g := range groups {
+		if !strings.HasSuffix(g.base, destroyedSuffix) {
+			continue
+		}
+		healthyIdx, ok := index[strings.TrimSuffix(g.base, destroyedSuffix)]
+		if !ok {
+			continue
+		}
+		groups[healthyIdx].meshes = append(groups[healthyIdx].meshes, g.meshes...)
+		merged[i] = true
+	}
+
+	kept := groups[:0]
+	for i, g := range groups {
+		if !merged[i] {
+			kept = append(kept, g)
+		}
+	}
+	return kept
+}
+
+// writeOBJGroup combines every LOD/state variant of one base mesh (see groupMeshesByBase) into a
+// single OBJ file — the default package-unpack behavior, matching writeGLBGroup — instead of one
+// file per variant. OBJ has no scene-graph nesting and its "v"/"vt" indices are shared across the
+// whole file, so each variant's vertex data is appended (with face indices offset by every prior
+// variant's vertex count) and each variant's own parts (or the whole variant, if it has no
+// matching skeleton) are labeled by their full variant path (e.g. "l1#carcano" or
+// "l1#carcano_Bolt") rather than just the bone name writeOBJ alone uses, so multiple variants'
+// same-named bones/parts stay distinguishable and individually selectable once imported.
+func writeOBJGroup(w io.Writer, _ string, meshes []asura.Mesh) error {
+	buf := bufio.NewWriter(w)
+	vertexOffset := 0
+	for _, m := range meshes {
+		for _, v := range m.Vertices {
+			p := objAxes(v.Position)
+			if _, err := fmt.Fprintf(buf, "v %g %g %g\n", p[0], p[1], p[2]); err != nil {
+				return err
+			}
+		}
+		for _, v := range m.Vertices {
+			if _, err := fmt.Fprintf(buf, "vt %g %g\n", v.UV0[0], v.UV0[1]); err != nil {
+				return err
+			}
+		}
+
+		names, indices := groupTrianglesByBone(m)
+		for _, name := range names {
+			label := m.Path
+			if name != "" {
+				label = m.Path + "_" + name
+			}
+			if _, err := fmt.Fprintf(buf, "o %s\ng %s\n", label, label); err != nil {
+				return err
+			}
+			for _, ti := range indices[name] {
+				t := m.Triangles[ti]
+				x, y, z := flipWinding(t)
+				a, b, c := int(x)+1+vertexOffset, int(y)+1+vertexOffset, int(z)+1+vertexOffset
+				if _, err := fmt.Fprintf(buf, "f %d/%d %d/%d %d/%d\n", a, a, b, b, c, c); err != nil {
+					return err
+				}
+			}
+		}
+		vertexOffset += len(m.Vertices)
+	}
+	return buf.Flush()
 }
 
 // writeOBJ writes a mesh as a Wavefront OBJ — the plain, unrigged alternative to the default

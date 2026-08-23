@@ -202,14 +202,74 @@ func boneNodeName(b asura.Bone, index int) string {
 }
 
 // writeGLB writes a mesh as a binary glTF 2.0 (.glb) file — the default mesh output format (see
-// writeOBJ for the plain, unrigged alternative). Position uses the same axis convention as
-// writeOBJ (see objAxes — the identity, confirmed by user testing in Blender), since Blender's
-// glTF importer converts glTF's mandated Y-up convention into Blender's native Z-up axes with
-// the exact same rotation its default OBJ import axis settings (Y up, -Z forward) already apply
-// — so whatever raw axis values make writeOBJ come out correct make this come out correct too.
-// Triangle winding is flipped the same way as writeOBJ, for the same reason (see writeOBJ).
+// writeOBJ for the plain, unrigged alternative). It's a thin wrapper around addMeshNodes: build
+// an empty document, add m's own node(s) to it, point the scene straight at them.
+func writeGLB(w io.Writer, m asura.Mesh) error {
+	bin := &gltfBinBuilder{}
+	doc := gltfDocument{
+		Asset:  gltfAsset{Version: "2.0", Generator: "asr-text-extractor"},
+		Scenes: []gltfScene{{}},
+	}
+	nodes, err := addMeshNodes(&doc, bin, m)
+	if err != nil {
+		return err
+	}
+	doc.Scenes[0].Nodes = nodes
+	return writeGLBContainer(w, doc, bin)
+}
+
+// writeGLBGroup combines every LOD/state variant of one base mesh — see groupMeshesByBase, which
+// decides what belongs together (LOD-prefixed siblings, and a "<base>_destroyed" counterpart
+// when one exists) — into a single .glb file, the default package-unpack behavior, instead of
+// the one-file-per-variant layout writeGLB alone produces (see the "wrote
+// .../l6#chandelier_long_base.glb" style sprawl that motivated this). Each variant keeps its own
+// independent geometry, armature, and skin (see addMeshNodes) — variants aren't merged into one
+// mesh or rigged to a shared skeleton instance, since that would need new, unvalidated
+// cross-variant assumptions this project hasn't checked against real data. Each variant's own
+// node(s) are wrapped under one node named after that variant's own path (e.g. "l1#carcano" or
+// "bulb_b_destroyed"), and all those wrapper nodes sit under one top-level node named after the
+// shared base name, so Blender shows one clean hierarchy (base name -> variant -> mesh/armature)
+// instead of several same-named, hard-to-tell-apart top-level objects spread across files.
+func writeGLBGroup(w io.Writer, baseName string, meshes []asura.Mesh) error {
+	bin := &gltfBinBuilder{}
+	doc := gltfDocument{
+		Asset:  gltfAsset{Version: "2.0", Generator: "asr-text-extractor"},
+		Scenes: []gltfScene{{}},
+	}
+
+	var wrappers []int
+	for _, m := range meshes {
+		nodes, err := addMeshNodes(&doc, bin, m)
+		if err != nil {
+			return err
+		}
+		wrapperIdx := len(doc.Nodes)
+		doc.Nodes = append(doc.Nodes, gltfNode{Name: m.Path, Children: nodes})
+		wrappers = append(wrappers, wrapperIdx)
+	}
+
+	groupIdx := len(doc.Nodes)
+	doc.Nodes = append(doc.Nodes, gltfNode{Name: baseName, Children: wrappers})
+	doc.Scenes[0].Nodes = []int{groupIdx}
+
+	return writeGLBContainer(w, doc, bin)
+}
+
+// addMeshNodes adds m's geometry (and, if m.Skeleton is set, a full armature+skin) to doc/bin,
+// returning every node index that sits at the top of m's own local hierarchy: a single mesh-node
+// index for a static mesh, or [armatureRootIdx, meshNodeIdx] for a skinned one. Shared by
+// writeGLB (which places these directly in the scene) and writeGLBGroup (which wraps them under
+// one extra node per variant when combining several LOD/state variants of the same mesh into one
+// file) so both produce identical per-mesh output.
 //
-// When m.Skeleton is nil, this writes a single static mesh node — no different in spirit from
+// Position uses the same axis convention as writeOBJ (see objAxes — the identity, confirmed by
+// user testing in Blender), since Blender's glTF importer converts glTF's mandated Y-up
+// convention into Blender's native Z-up axes with the exact same rotation its default OBJ import
+// axis settings (Y up, -Z forward) already apply — so whatever raw axis values make writeOBJ
+// come out correct make this come out correct too. Triangle winding is flipped the same way as
+// writeOBJ, for the same reason (see writeOBJ).
+//
+// When m.Skeleton is nil, this adds a single static mesh node — no different in spirit from
 // writeOBJ's ungrouped output. When it's set, this instead builds a real, Blender-importable
 // armature: one flat (non-nested — see inverseBindMatrix's doc comment on why nesting bones
 // under each other here would reintroduce the parent-composition bug asura.Skeleton.Skin's own
@@ -220,15 +280,9 @@ func boneNodeName(b asura.Bone, index int) string {
 // independently selected and posed in Blender — a real armature for rigging, not just corrected
 // static geometry. Bones don't inherit each other's posing (Bone.ParentIndex isn't used to nest
 // joint nodes, matching Skin's own formula) — a known, documented limitation, not an oversight.
-func writeGLB(w io.Writer, m asura.Mesh) error {
+func addMeshNodes(doc *gltfDocument, bin *gltfBinBuilder, m asura.Mesh) ([]int, error) {
 	if len(m.Vertices) == 0 {
-		return fmt.Errorf("asura: mesh %q has no vertices", m.Path)
-	}
-
-	bin := &gltfBinBuilder{}
-	doc := gltfDocument{
-		Asset:  gltfAsset{Version: "2.0", Generator: "asr-text-extractor"},
-		Scenes: []gltfScene{{}},
+		return nil, fmt.Errorf("asura: mesh %q has no vertices", m.Path)
 	}
 
 	var posData, uvData []byte
@@ -329,45 +383,47 @@ func writeGLB(w io.Writer, m asura.Mesh) error {
 		Count: len(m.Triangles) * 3, Type: "SCALAR",
 	})
 
-	doc.Meshes = []gltfMesh{{
+	meshIdx := len(doc.Meshes)
+	doc.Meshes = append(doc.Meshes, gltfMesh{
 		Name:       m.Path,
 		Primitives: []gltfPrimitive{{Attributes: attrs, Indices: idxAcc}},
-	}}
+	})
 
 	if m.Skeleton == nil {
-		doc.Nodes = []gltfNode{{Name: m.Path, Mesh: intPtr(0)}}
-		doc.Scenes[0].Nodes = []int{0}
-		return writeGLBContainer(w, doc, bin)
+		doc.Nodes = append(doc.Nodes, gltfNode{Name: m.Path, Mesh: intPtr(meshIdx)})
+		return []int{len(doc.Nodes) - 1}, nil
 	}
 
+	rootIdx := len(doc.Nodes)
+	doc.Nodes = append(doc.Nodes, gltfNode{}) // filled in below, once joints[] is known
 	joints := make([]int, len(m.Skeleton.Bones))
-	boneNodes := make([]gltfNode, len(m.Skeleton.Bones))
 	var invBindData []byte
 	for i, b := range m.Skeleton.Bones {
-		joints[i] = 1 + i // node 0 is the armature root
-		boneNodes[i] = gltfNode{
+		joints[i] = len(doc.Nodes)
+		doc.Nodes = append(doc.Nodes, gltfNode{
 			Name:        boneNodeName(b, i),
 			Translation: vec3ToFloat64(quatRotateVec(b.LocalRot, b.LocalPos)),
 			Rotation:    quatToGLTF(b.LocalRot),
-		}
+		})
 		invBindData = appendMat4(invBindData, inverseBindMatrix(b))
 	}
+	doc.Nodes[rootIdx] = gltfNode{Name: m.Skeleton.Name, Children: joints}
+
 	invBindAcc := len(doc.Accessors)
 	doc.Accessors = append(doc.Accessors, gltfAccessor{
 		BufferView: bin.addView(invBindData, 0), ComponentType: gltfComponentFloat,
 		Count: len(m.Skeleton.Bones), Type: "MAT4",
 	})
 
-	doc.Skins = []gltfSkin{{
-		Name: m.Skeleton.Name, InverseBindMatrices: invBindAcc, Skeleton: 0, Joints: joints,
-	}}
+	skinIdx := len(doc.Skins)
+	doc.Skins = append(doc.Skins, gltfSkin{
+		Name: m.Skeleton.Name, InverseBindMatrices: invBindAcc, Skeleton: rootIdx, Joints: joints,
+	})
 
-	meshNodeIdx := 1 + len(joints)
-	doc.Nodes = append([]gltfNode{{Name: m.Skeleton.Name, Children: joints}}, boneNodes...)
-	doc.Nodes = append(doc.Nodes, gltfNode{Name: m.Path, Mesh: intPtr(0), Skin: intPtr(0)})
-	doc.Scenes[0].Nodes = []int{0, meshNodeIdx}
+	meshNodeIdx := len(doc.Nodes)
+	doc.Nodes = append(doc.Nodes, gltfNode{Name: m.Path, Mesh: intPtr(meshIdx), Skin: intPtr(skinIdx)})
 
-	return writeGLBContainer(w, doc, bin)
+	return []int{rootIdx, meshNodeIdx}, nil
 }
 
 // writeGLBContainer wraps doc/bin in the .glb binary container: a 12-byte header (magic

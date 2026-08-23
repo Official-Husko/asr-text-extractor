@@ -16,7 +16,9 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
 - **`package`** — `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`): manifest
   sub-files, embedded textures, and meshes — extract only, as binary glTF by default (a real,
   riggable armature when a mesh has a matching skeleton — e.g. a rifle's bolt assembly, posable
-  bone-by-bone in Blender) or Wavefront `.obj` via `--mesh-format obj`
+  bone-by-bone in Blender) or Wavefront `.obj` via `--mesh-format obj`; LOD and destroyed-state
+  variants of the same object are combined into one file by default (`--separate-lods` to opt
+  out)
 
 Mesh normals aren't decoded yet — the container/chunk reader (`pkg/asura`) is built to be
 extended as more of these formats are reverse-engineered. Recompiling/repacking beyond
