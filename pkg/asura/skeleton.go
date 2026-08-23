@@ -150,18 +150,28 @@ type worldTransform struct {
 	rot [4]float32
 }
 
+// worldTransforms returns each bone's transform verbatim (LocalPos/LocalRot), *not* composed
+// through the parent hierarchy the way a conventional skeletal-animation system would.
+//
+// A first version of this function did compose child transforms through their parent's
+// rotation (the textbook-correct thing to do for a general bone hierarchy) — traced against a
+// real sample ("carcano") and found wrong: the root bone's rotation is a genuine 180-degree
+// turn about Z (not identity — a coincidence this project spent a while not noticing), and
+// composing it into children's *rotation* cancels out to a net identity (180+180=360), while
+// composing it into their *position* flips the offset's sign — meaning root-bone vertices get
+// the real 180-degree correction applied directly, but child-bone vertices silently don't get
+// it applied to their own vertex data at all, only to their translation, an inconsistency that
+// showed up as the root mesh looking right while its rigid sub-parts (a rifle's bolt, trigger,
+// etc.) didn't. Every bone in the one real skeleton available for testing is flat (parented
+// directly to the root, one level) and shares the *same* rotation as the root — consistent with
+// each bone's LocalPos/LocalRot already being expressed in the mesh's own shared coordinate
+// frame rather than relative to its parent, which is what applying every bone's own values
+// directly (no composition) amounts to. Whether a real multi-level hierarchy with differing
+// per-bone rotations would need composition after all isn't known — no sample to check against.
 func (s *Skeleton) worldTransforms() []worldTransform {
 	out := make([]worldTransform, len(s.Bones))
 	for i, b := range s.Bones {
-		if i == 0 || b.ParentIndex == i || b.ParentIndex < 0 || b.ParentIndex >= i {
-			out[i] = worldTransform{pos: b.LocalPos, rot: b.LocalRot}
-			continue
-		}
-		parent := out[b.ParentIndex]
-		out[i] = worldTransform{
-			pos: addVec3(parent.pos, quatRotateVec(parent.rot, b.LocalPos)),
-			rot: quatMul(parent.rot, b.LocalRot),
-		}
+		out[i] = worldTransform{pos: b.LocalPos, rot: b.LocalRot}
 	}
 	return out
 }
@@ -209,19 +219,6 @@ func addVec3(a, b [3]float32) [3]float32 {
 
 func scaleVec3(v [3]float32, s float32) [3]float32 {
 	return [3]float32{v[0] * s, v[1] * s, v[2] * s}
-}
-
-// quatMul multiplies two quaternions in (w, x, y, z) form: a composed with b, applied as
-// "rotate by b, then by a".
-func quatMul(a, b [4]float32) [4]float32 {
-	aw, ax, ay, az := a[0], a[1], a[2], a[3]
-	bw, bx, by, bz := b[0], b[1], b[2], b[3]
-	return [4]float32{
-		aw*bw - ax*bx - ay*by - az*bz,
-		aw*bx + ax*bw + ay*bz - az*by,
-		aw*by - ax*bz + ay*bw + az*bx,
-		aw*bz + ax*by - ay*bx + az*bw,
-	}
 }
 
 // quatRotateVec rotates v by quaternion q (w, x, y, z form).

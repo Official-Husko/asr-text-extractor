@@ -145,31 +145,62 @@ func TestSkeletonSkinTranslationOnly(t *testing.T) {
 	}
 }
 
-func TestSkeletonSkinRotationAndHierarchy(t *testing.T) {
-	// A root, and a child rotated 90 degrees around Z, offset by (1,0,0) from the root, whose
-	// own child (grandchild of root) is offset by (1,0,0) in the *child's* local space —
-	// composed through the hierarchy, the grandchild's world position should reflect the
-	// child's 90-degree rotation being applied to its own local offset.
+func TestSkeletonSkinAppliesRotation(t *testing.T) {
+	// A root bone with a genuine 90-degree rotation about Z (not identity) — bone transforms
+	// apply directly, no parent composition (see worldTransforms' doc comment for why).
 	quarterTurnZ := [4]float32{float32(math.Sqrt(0.5)), 0, 0, float32(math.Sqrt(0.5))} // w,x,y,z
 	sk := &Skeleton{
 		Bones: []Bone{
-			{ParentIndex: 0, LocalPos: [3]float32{0, 0, 0}, LocalRot: [4]float32{1, 0, 0, 0}},
-			{ParentIndex: 0, LocalPos: [3]float32{1, 0, 0}, LocalRot: quarterTurnZ},
-			{ParentIndex: 1, LocalPos: [3]float32{1, 0, 0}, LocalRot: [4]float32{1, 0, 0, 0}},
+			{ParentIndex: 0, LocalPos: [3]float32{0, 0, 0}, LocalRot: quarterTurnZ},
 		},
 	}
 	mesh := &Mesh{
 		Vertices: []MeshVertex{
-			{Position: [3]float32{0, 0, 0}, BoneIDs: [8]uint8{2}, BoneWeights: [8]uint8{255}},
+			{Position: [3]float32{1, 0, 0}, BoneIDs: [8]uint8{0}, BoneWeights: [8]uint8{255}},
 		},
 	}
 	got := sk.Skin(mesh)[0]
-	// Bone 1 world = pos(1,0,0), rot=90 about Z. Bone 2 local pos (1,0,0) rotated by bone 1's
-	// world rotation (90 about Z: (1,0,0) -> (0,1,0)) then added to bone 1's world pos (1,0,0)
-	// -> (1,1,0).
-	want := [3]float32{1, 1, 0}
+	want := [3]float32{0, 1, 0} // (1,0,0) rotated 90 degrees about Z
 	if !vecAlmostEqual(got, want) {
-		t.Errorf("grandchild-bone vertex = %v, want %v", got, want)
+		t.Errorf("vertex = %v, want %v", got, want)
+	}
+}
+
+// TestSkeletonSkinChildDoesNotInheritParentRotation regression-tests the actual bug found
+// against a real sample ("carcano"): a root bone with a genuine 180-degree rotation (not
+// identity), and a child bone parented to it sharing that *same* rotation and a small
+// translation offset. An earlier version of worldTransforms composed a child's transform
+// through its parent's rotation, the textbook-correct thing for a general skeletal hierarchy —
+// but for this real data, that canceled the child's own rotation to a net identity
+// (180+180=360) while still flipping the sign of its translation offset, an inconsistency that
+// showed up as the root mesh (correctly 180-degree-rotated) looking right while its
+// bone-weighted rigid sub-parts didn't. Each bone's transform must apply on its own, unrotated
+// by its parent, for both root and child vertices to end up consistently rotated.
+func TestSkeletonSkinChildDoesNotInheritParentRotation(t *testing.T) {
+	rot180Z := [4]float32{0, 0, 0, 1} // w,x,y,z: a genuine 180-degree rotation about Z
+	sk := &Skeleton{
+		Bones: []Bone{
+			{ParentIndex: 0, LocalPos: [3]float32{0, 0, 0}, LocalRot: rot180Z},
+			{ParentIndex: 0, LocalPos: [3]float32{0, -1, 0}, LocalRot: rot180Z},
+		},
+	}
+	mesh := &Mesh{
+		Vertices: []MeshVertex{
+			{Position: [3]float32{1, 0, 0}, BoneIDs: [8]uint8{0}, BoneWeights: [8]uint8{255}},
+			{Position: [3]float32{1, 0, 0}, BoneIDs: [8]uint8{1}, BoneWeights: [8]uint8{255}},
+		},
+	}
+	got := sk.Skin(mesh)
+	// Root: (1,0,0) rotated 180 about Z -> (-1,0,0), plus root's own zero offset.
+	wantRoot := [3]float32{-1, 0, 0}
+	if !vecAlmostEqual(got[0], wantRoot) {
+		t.Errorf("root-bone vertex = %v, want %v", got[0], wantRoot)
+	}
+	// Child: (1,0,0) rotated 180 about Z by its *own* rotation (not canceled by composing
+	// with the parent's) -> (-1,0,0), plus the child's own (0,-1,0) offset -> (-1,-1,0).
+	wantChild := [3]float32{-1, -1, 0}
+	if !vecAlmostEqual(got[1], wantChild) {
+		t.Errorf("child-bone vertex = %v, want %v (this is the exact bug shape found in real data)", got[1], wantChild)
 	}
 }
 

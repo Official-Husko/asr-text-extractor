@@ -103,11 +103,23 @@ and ignoring an `l1#`/`l2#`/... LOD prefix — all LOD variants of a rigged mesh
 skeleton), and applies standard linear-blend skinning using each vertex's bone weights before
 the mesh is handed back. A real sample confirms the shape of the fix exactly: the "carcano"
 mesh's 5 distinct bone IDs match an HSKN chunk named "Carcano" with exactly 5 bones — Body,
-Bolt, Bolt_Handle, Firing_Pin, Trigger — all parented to Body with identity rotations and small
-(centimeter-scale) translation-only offsets, matching both the rough scale of the
-misplacement and (per the user's own visual check) the correct fix. Meshes with no matching
-skeleton, or whose vertices carry no bone weight at all, are returned unchanged — this is
-automatic and free for meshes that don't need it.
+Bolt, Bolt_Handle, Firing_Pin, Trigger — all parented to Body, sharing Body's own rotation (a
+genuine 180-degree turn, not identity — despite `(w,x,y,z)=(0,0,0,1)` reading like a "default"
+value at a glance) plus small (centimeter-scale) position-only offsets per bone.
+
+Each bone's transform is applied on its own, without composing it through its parent's rotation
+the way a general skeletal-animation system normally would — an earlier version did compose
+through the hierarchy (the textbook-correct approach), and it was wrong for this data: the
+root's real 180-degree rotation, composed into a child bone's own rotation, canceled out to a
+net identity (180+180=360), while composing it into the child's *position* still flipped that
+offset's sign — so the root mesh (correctly rotated) looked right while its rigid sub-parts
+didn't. That mismatch — main body correct, individually-positioned sub-parts upside-down — is
+exactly what a user visual check in Blender caught; the numeric bounding-box/edge-length
+validation this project could do on its own couldn't have caught it, since it doesn't check
+per-part *orientation*, only aggregate size and local coherence.
+
+Meshes with no matching skeleton, or whose vertices carry no bone weight at all, are returned
+unchanged — this is automatic and free for meshes that don't need it.
 
 `HSKN`'s own on-disk layout has several fields gated by a version number and a flags bitfield
 that this tool doesn't fully decode (only what's needed to reach the bind-pose transform data);
