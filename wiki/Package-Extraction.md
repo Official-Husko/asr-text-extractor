@@ -44,17 +44,52 @@ immediately after the manifest turned out to be a single bare resource reference
 payload, just a self-referential path) followed directly by ~2,200 unrelated `CONA` entity
 records, with the real texture entries starting much further in and each one followed by its
 own unrelated section rather than by another texture. Extraction therefore walks every section
-generically and decodes each one tagged `RSCF` as a possible texture inline (same per-entry
-decoder as standalone [`RSCF` texture archives](Texture-Extraction.md) — see that page for the
-entry field layout). In a real 473MB decompressed sample, 3,071 `RSCF`-tagged sections break
-down by their resource-type field as: 2,502 textures (matching an independent whole-file
-search for the `"DDS "` magic exactly), 1 bare package self-reference (0 payload bytes), and
-568 resource-type-0 entries totaling 169MB that this tool doesn't currently extract or
-interpret — see Known limitations below.
+generically and decodes each one tagged `RSCF` as a possible texture or mesh entry inline (same
+per-entry decoder as standalone [`RSCF` texture archives](Texture-Extraction.md) — see that page
+for the entry field layout). In a real 473MB decompressed sample, 3,071 `RSCF`-tagged sections
+break down by their resource-type field as: 2,502 textures (matching an independent whole-file
+search for the `"DDS "` magic exactly), 550 per-object meshes (see Meshes below), 1 bare
+package self-reference (0 payload bytes), and 2 further resource-type-0 entries
+(`"inst (dynamic)"`/`"inst (static)"`) that are neither — almost certainly a reference into the
+separate, much larger `INST` section, not extracted or interpreted.
 
-The internal layout of `PBRV` (a geometry/mesh block, several megabytes in a typical level) has
-not been reverse-engineered and isn't parsed — it's only skipped over via its declared length,
-same as every other unidentified section. **Model/mesh extraction is not implemented.**
+The internal layout of `PBRV` (a *separate* geometry/spatial-data block, several megabytes in a
+typical level — not the same thing as the RSCF mesh entries described below) has not been
+reverse-engineered and isn't parsed; it's only skipped over via its declared length, same as
+every other unidentified section.
+
+## Meshes
+
+Some `RSCF` entries (resource-type 0) are per-object render meshes rather than textures: a
+header, one or more material groups, a vertex buffer, and a shared triangle-index buffer. This
+format was **not** reverse-engineered from this project's own sample data — it's a direct,
+field-for-field port of a dedicated, independently-authored Zombie Army 4 reverse-engineering
+project's own working Blender importer
+(`zombie_army_4_findings-master/ZombieArmy4Loader/model.py`), which had this format fully
+solved already. (An earlier version of this tool's mesh support was instead based on a format
+hypothesis ported from a *different* Rebellion game, Evil Genius 2 — that version's exported
+models turned out to be garbled nonsense once actually opened in Blender, not the "close
+enough" the numbers alone had suggested; see `pkg/asura/mesh.go`'s doc comments for what went
+wrong. That version is gone from the code now, but its lesson stands: a format hypothesis
+validated only by total-byte-count reconciliation, with no way to visually inspect the result,
+is not validated.)
+
+The header is `44 + 24*groupCount` bytes: 5 `uint32` fields (group count, vertex count, total
+index count, a redundant triangle count, and one unconfirmed field), then one 24-byte record
+per group (a material hash plus that group's own index count), then a 3-float position
+dequantization scale and a 3-float offset. Per vertex (48-byte stride): a quantized position (3
+× `uint16` at offset 0, dequantized per axis as `raw/32767 * (scale/2) + offset`) and two UV
+channels (2 × half-float each) at offsets 24 and 28. The rest of each 48-byte vertex (normals,
+skin weights, and bone indices, per the reference importer) isn't decoded yet.
+
+All group counts are supported — real samples have 1, 2, 4, and 10. Validated by checking that
+decoded triangle edge lengths are small relative to each mesh's own bounding box (i.e.
+triangles connect nearby vertices, the signature of a coherent mesh rather than scrambled
+data) and that bounding-box sizes are physically plausible across a huge range of named
+objects, from a 6cm light bulb to an 8m fractured structure piece — there's still no way to
+visually render decoded geometry from the environment this tool was developed in, so if an
+exported model looks wrong once actually opened in a 3D viewer, that's genuinely useful
+feedback, not a formality.
 
 ## Commands
 
@@ -69,23 +104,29 @@ Extracts:
 - every embedded texture found among the package's tagged sections, to
   `<output-dir>/textures/<relative-path>.dds` (or `.png` with `--convert png`) — same decoding
   and `--convert` behavior as the standalone [`texture`](Texture-Extraction.md) command
+- every decodable mesh (see Meshes above) found among the same tagged sections, to
+  `<output-dir>/meshes/<name>.obj` — a plain Wavefront OBJ with vertex positions, UVs, and
+  triangle faces, importable directly into Blender or any other 3D tool. No normals are
+  written (`Mesh` doesn't decode any) — use Blender's Shade Smooth / Recalculate Normals after
+  import.
 
 If `output-dir` is omitted, it defaults to the input's base name. Creates subdirectories as
-needed, and prints a one-line diagnostic to stderr (`Entries: N  Textures: N`) before
-extracting.
+needed, and prints a one-line diagnostic to stderr (`Entries: N  Textures: N  Meshes: N`)
+before extracting.
 
 ```sh
 asr-text-extractor package unpack h_hellbase.pc
 # -> h_hellbase/files/LevelExportTemp0/ZA/Dust/ZA4_Mist_UnderLights_Small.pfx
 # -> h_hellbase/textures/graphics/za4/rocks/scan_rock_cluster_01_ar.dds
-# -> ... (282 files, 2502 textures)
+# -> h_hellbase/meshes/ammo_crate_insideboxes_c.obj
+# -> ... (282 files, 2502 textures, 550 meshes)
 
 asr-text-extractor package unpack h_hellbase.pc_entdata
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.snd
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.nav
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.cut
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.ent
-# (no textures section in this file — Textures: 0)
+# (no textures or meshes section in this file — Textures: 0  Meshes: 0)
 ```
 
 Like `sound` and `texture`, this is extract-only: there's no `--format`/`--encoding` and no
@@ -93,14 +134,20 @@ repack path yet.
 
 ## Known limitations
 
-- `PBRV` (geometry/mesh data) and every other non-`RSCF` tagged section between the manifest
-  and its sub-files are skipped, not decoded — model/mesh extraction is a planned, separate
-  effort (see [Home](Home.md#planned-not-yet-implemented)). A promising lead for that future
-  work: `RSCF` entries with resource-type 0 (see [Texture Extraction](Texture-Extraction.md)) —
-  568 of them in a real sample, totaling 169MB, with plain per-object names (no `\graphics\`
-  path prefix, unlike textures) and `l1#`/`l2#`/`l3#`/`l4#`-prefixed variants whose sizes shrink
-  together in the same object (e.g. 257408 → 234044 → 168182 → 130370 → 98576 bytes) — shaped
-  like mesh LOD chains, not investigated further yet.
+- `PBRV` and every other non-`RSCF` tagged section between the manifest and its sub-files are
+  skipped, not decoded.
+- `Mesh` only decodes position and both UV channels — no normals, skin weights, or bone
+  indices, even though the reference implementation this was ported from decodes all of them
+  (the source data is there in the vertex stride, `mesh.go` just doesn't read it yet). OBJ
+  export therefore has no shading data; Blender's own recalculate-normals fills the gap
+  reasonably well for most static props, but skinned/rigged meshes have no way to bind to a
+  skeleton via OBJ at all — a skeleton importer (from the same reference project's `HSKN`
+  handling) and a richer export format (glTF, most likely) would both be needed for that.
+- Mesh decoding was validated by checking that decoded triangle edge lengths are small relative
+  to each mesh's own bounding box and that bounding-box sizes are physically plausible across a
+  wide range of named objects — not by actually rendering the geometry in a 3D viewer, since
+  there's no way to do that from the environment this tool was developed in. If an exported OBJ
+  looks wrong once opened in Blender, that's a real signal worth reporting back.
 - The manifest entry's trailing `uint32` field (after offset and size) is always `1` across
   every entry in the real samples tested; its meaning beyond that isn't confirmed.
 - `.snd`, `.cut`, and `.ent` sub-files extract as raw, uninterpreted bytes — no attempt is made

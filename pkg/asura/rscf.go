@@ -23,15 +23,20 @@ type RSCFFile struct {
 	Entries []TextureEntry
 }
 
-// rscfResourceTypeTexture is the RSCF resource-type code (the 3rd of an entry's 5 header
-// fields, see parseRSCFEntry) for a texture entry. Other observed values — cross-checked
-// against independent community Asura-format reference decoders (unpack_rebellion.py,
-// tools_ZA4.py — see CLAUDE.md) — are 0 (a bare reference to another resource, no embedded
-// payload: e.g. a level package's self-reference to its own .pc file, seen with a declared
-// payload size of 0), 3 (audio), and 6 (a reference to a .pc package, also no embedded
-// payload in samples seen so far). Only textures are decoded today; audio entries exist in
-// real data but extracting them hasn't been tried yet.
-const rscfResourceTypeTexture = 2
+// RSCF resource-type codes (the 3rd of an entry's 5 header fields, see parseRSCFEntry) —
+// cross-checked against independent community Asura-format reference decoders
+// (unpack_rebellion.py, tools_ZA4.py — see CLAUDE.md). Type 0 is a large, mixed category: most
+// entries are per-object meshes (see mesh.go), but a couple of real samples are unrelated
+// bulk data blobs ("inst (dynamic)"/"inst (static)", almost certainly a reference into the
+// separate, much larger INST section) that don't decode as a mesh at all — ParseMesh's own
+// size-reconciliation check is what tells the two apart, not the type code alone. Type 3 is
+// audio (not seen in the sample used to build this feature, not implemented). Type 6 is a bare
+// reference to another package with no embedded payload (e.g. a level package's self-reference
+// to its own .pc file).
+const (
+	rscfResourceTypeMesh    = 0
+	rscfResourceTypeTexture = 2
+)
 
 // ParseRSCF decodes a sequence of RSCF entries from data, which must start with the 8-byte
 // Asura magic immediately followed by the first entry's "RSCF" tag.
@@ -75,19 +80,28 @@ func ParseRSCF(data []byte) (*RSCFFile, error) {
 		if err != nil {
 			return nil, err
 		}
-		if entry != nil {
-			f.Entries = append(f.Entries, *entry)
+		if tex := entry.asTexture(); tex != nil {
+			f.Entries = append(f.Entries, *tex)
 		}
 		pos = nextPos
 	}
 	return f, nil
 }
 
+// rscfEntry is one raw, type-tagged resource from an RSCF section, before interpreting its
+// payload according to its resource-type code (see asTexture, mesh.go's asMesh).
+type rscfEntry struct {
+	path    string
+	resType uint32
+	payload []byte
+}
+
 // parseRSCFEntry decodes one RSCF entry at data[pos:] (which must already be known to start
-// with the "RSCF" tag) and returns the decoded texture (nil if this entry isn't a texture, or
-// its declared payload doesn't actually start with the DDS magic), the position of the next
-// entry, and any hard parse error.
-func parseRSCFEntry(data []byte, pos int) (*TextureEntry, int, error) {
+// with the "RSCF" tag) and returns the raw entry, the position of the next entry, and any hard
+// parse error (a truncated header, unterminated path, or a total/payload size that doesn't fit
+// — never "this entry's payload isn't the type its resource-type code claims", which is left
+// to the type-specific interpreters to decide).
+func parseRSCFEntry(data []byte, pos int) (*rscfEntry, int, error) {
 	entryStart := pos
 	r := &reader{data: data, pos: pos + 4}
 	totalSize := r.u32()
@@ -114,16 +128,20 @@ func parseRSCFEntry(data []byte, pos int) (*TextureEntry, int, error) {
 		return nil, 0, fmt.Errorf("asura: RSCF entry %q at offset %d: declared payload size %d overruns entry", path, entryStart, payloadSize)
 	}
 
-	if resType != rscfResourceTypeTexture {
-		return nil, nextEntryStart, nil
+	return &rscfEntry{path: path, resType: resType, payload: data[payloadStart:payloadEnd]}, nextEntryStart, nil
+}
+
+// asTexture interprets the entry as a texture: nil unless its resource-type code is
+// rscfResourceTypeTexture and its payload actually starts with the DDS magic (the type code
+// alone isn't trusted — see the rscfResourceType doc comment).
+func (e *rscfEntry) asTexture() *TextureEntry {
+	if e.resType != rscfResourceTypeTexture {
+		return nil
 	}
-	payload := data[payloadStart:payloadEnd]
-	if len(payload) < 4 || string(payload[:4]) != "DDS " {
-		// The type field says texture but the payload doesn't look like one — don't trust
-		// it, still advance by the declared total size so the caller stays in sync.
-		return nil, nextEntryStart, nil
+	if len(e.payload) < 4 || string(e.payload[:4]) != "DDS " {
+		return nil
 	}
-	return &TextureEntry{Path: path, Data: payload}, nextEntryStart, nil
+	return &TextureEntry{Path: e.path, Data: e.payload}
 }
 
 func allZero(b []byte) bool {

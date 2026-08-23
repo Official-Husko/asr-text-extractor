@@ -14,13 +14,15 @@ type PackageEntry struct {
 }
 
 // Package is a parsed Asura level-package file (.pc, .pc_entdata — both AsuraZbb-compressed):
-// the manifest-referenced sub-files, plus any embedded RSCF texture entries found among the
-// many tagged sections (geometry/spatial data, per-object records, etc. — see
+// the manifest-referenced sub-files, plus any embedded RSCF texture and mesh entries found
+// among the many tagged sections (geometry/spatial data, per-object records, etc. — see
 // parsePackageContent) that sit between the manifest and those sub-files. Not every package
-// has RSCF sections there (e.g. .pc_entdata doesn't), in which case Textures is empty.
+// has RSCF sections there (e.g. .pc_entdata doesn't), in which case Textures and Meshes are
+// both empty.
 type Package struct {
 	Entries  []PackageEntry
 	Textures []TextureEntry
+	Meshes   []Mesh
 }
 
 // ParsePackage decompresses an AsuraZbb-wrapped level-package file and parses its FNFO/RSFL
@@ -75,12 +77,14 @@ func parsePackageContent(data []byte) (*Package, error) {
 	// transforms, SDSM/SDEV spatial data, HSKN/HSKL/HSBB/HSKE/HMPT skeleton/hitbox data,
 	// FAAN/TXAN animation refs, and more) — all sharing the same generic tag+size framing.
 	// RSCF sections are interleaved throughout this run one at a time (each immediately
-	// followed by unrelated sections, not packed contiguously), and most RSCF sections here
-	// are texture entries, but a few are bare resource references with no embedded DDS data
-	// (confirmed against a real sample: 3071 RSCF sections, 2502 of which embed a "DDS "
-	// texture — matching an independent whole-file search for "DDS " exactly). So rather
-	// than trying to locate "the start of the RSCF archive", every section is walked
-	// generically, and each one tagged RSCF is decoded as a possible texture entry inline.
+	// followed by unrelated sections, not packed contiguously); most are textures or
+	// single-group meshes, but some are bare resource references or other resource types this
+	// package doesn't decode (confirmed against a real sample: 3071 RSCF sections — 2502
+	// textures, matching an independent whole-file search for "DDS " exactly, 550 single-group
+	// meshes, 1 bare package reference, and 2 unrelated "inst" resources that don't decode as
+	// anything here). So rather than trying to locate "the start of the RSCF archive", every
+	// section is walked generically, and each one tagged RSCF is decoded as a possible texture
+	// or mesh entry inline.
 	pos := rsflEnd
 	for pos < extrasStart {
 		if len(data)-pos >= 4 && string(data[pos:pos+4]) == "RSCF" {
@@ -88,8 +92,10 @@ func parsePackageContent(data []byte) (*Package, error) {
 			if err != nil {
 				break
 			}
-			if entry != nil {
-				pkg.Textures = append(pkg.Textures, *entry)
+			if tex := entry.asTexture(); tex != nil {
+				pkg.Textures = append(pkg.Textures, *tex)
+			} else if m := entry.asMesh(); m != nil {
+				pkg.Meshes = append(pkg.Meshes, *m)
 			}
 			pos = next
 			continue

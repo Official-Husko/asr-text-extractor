@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"image/png"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +49,7 @@ func newPackageUnpackCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
-			fmt.Fprintf(os.Stderr, "Entries: %d  Textures: %d\n", len(pkg.Entries), len(pkg.Textures))
+			fmt.Fprintf(os.Stderr, "Entries: %d  Textures: %d  Meshes: %d\n", len(pkg.Entries), len(pkg.Textures), len(pkg.Meshes))
 
 			for _, e := range pkg.Entries {
 				dest := filepath.Join(outDir, "files", assetRelPath(e.Path))
@@ -95,10 +97,57 @@ func newPackageUnpackCmd() *cobra.Command {
 			if skipped > 0 {
 				fmt.Fprintf(os.Stderr, "%d of %d textures skipped (unsupported pixel format)\n", skipped, len(pkg.Textures))
 			}
+
+			for _, m := range pkg.Meshes {
+				dest := filepath.Join(outDir, "meshes", relPathWithExt(m.Path, ".obj"))
+				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+					return err
+				}
+				f, err := os.Create(dest)
+				if err != nil {
+					return err
+				}
+				err = writeOBJ(f, m)
+				closeErr := f.Close()
+				if err != nil {
+					return fmt.Errorf("%s: writing OBJ: %w", m.Path, err)
+				}
+				if closeErr != nil {
+					return closeErr
+				}
+				fmt.Fprintln(os.Stderr, "wrote", dest)
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&convert, "convert", "dds",
 		"output image format for embedded textures: dds (raw, default, always succeeds) or png (decoded, lossless; entries in an unsupported pixel format are skipped with a warning)")
 	return cmd
+}
+
+// writeOBJ writes a mesh as a Wavefront OBJ: a "v" line per vertex position, a "vt" line per
+// vertex's first UV channel (Mesh.UV0 — the second channel, UV1, isn't exposed via OBJ), and a
+// triangle "f" line per Mesh triangle referencing them by the shared, 1-indexed (OBJ
+// convention) vertex/UV index. Mesh has no decoded normals, so this doesn't write "vn" lines;
+// Blender's own "Shade Smooth" / "Recalculate Normals" produces a reasonable result from the
+// geometry alone.
+func writeOBJ(w io.Writer, m asura.Mesh) error {
+	buf := bufio.NewWriter(w)
+	for _, v := range m.Vertices {
+		if _, err := fmt.Fprintf(buf, "v %g %g %g\n", v.Position[0], v.Position[1], v.Position[2]); err != nil {
+			return err
+		}
+	}
+	for _, v := range m.Vertices {
+		if _, err := fmt.Fprintf(buf, "vt %g %g\n", v.UV0[0], v.UV0[1]); err != nil {
+			return err
+		}
+	}
+	for _, t := range m.Triangles {
+		a, b, c := t[0]+1, t[1]+1, t[2]+1 // OBJ indices are 1-based
+		if _, err := fmt.Fprintf(buf, "f %d/%d %d/%d %d/%d\n", a, a, b, b, c, c); err != nil {
+			return err
+		}
+	}
+	return buf.Flush()
 }
