@@ -14,8 +14,9 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
 - **`texture`** — `RSCF` chunks: embedded textures in a `.pc_textures` archive — extract only,
   as raw `.dds` or, with `--convert png`, as decoded lossless PNG
 - **`package`** — `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`): manifest
-  sub-files, embedded textures, and meshes (as Wavefront `.obj`, automatically skinned against
-  a matching skeleton when a mesh has one — e.g. a rifle's bolt assembly) — extract only
+  sub-files, embedded textures, and meshes — extract only, as binary glTF by default (a real,
+  riggable armature when a mesh has a matching skeleton — e.g. a rifle's bolt assembly, posable
+  bone-by-bone in Blender) or Wavefront `.obj` via `--mesh-format obj`
 
 Mesh normals aren't decoded yet — the container/chunk reader (`pkg/asura`) is built to be
 extended as more of these formats are reverse-engineered. Recompiling/repacking beyond

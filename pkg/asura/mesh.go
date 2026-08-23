@@ -50,14 +50,17 @@ type Mesh struct {
 	Groups    []MeshGroup
 	Triangles [][3]uint16
 
-	// BoneNames, when non-nil, names each bone a vertex's BoneIDs[0] can index into — set by
-	// parsePackageContent when a Skeleton matching this mesh's name was found and applied (see
-	// skeleton.go), nil otherwise. This is a *different* grouping than Groups above: Groups is
-	// the mesh's own material sub-meshes (by triangle-index range), while BoneNames reflects
-	// which rigid sub-part (e.g. a rifle's "Body" vs "Bolt") each vertex belongs to — the two
-	// don't necessarily line up, and a real sample ("carcano") has only one material Group but
-	// five distinct bones.
-	BoneNames []string
+	// Skeleton, when non-nil, is the bind-pose bone hierarchy a vertex's BoneIDs index into —
+	// set by parsePackageContent when a Skeleton matching this mesh's name was found (see
+	// skeleton.go), nil otherwise. Vertices' Position values have already been repositioned by
+	// Skeleton.Skin by the time a caller sees this Mesh — Skeleton is kept around (rather than
+	// discarded after skinning) so callers can also emit a real, rigged output (e.g. a glTF
+	// skin/armature) rather than just corrected static positions. This is unrelated to Groups
+	// above: Groups is the mesh's own material sub-meshes (by triangle-index range), while
+	// Skeleton.Bones reflects which rigid sub-part (e.g. a rifle's "Body" vs "Bolt") each vertex
+	// belongs to — the two don't necessarily line up, and a real sample ("carcano") has only one
+	// material Group but five distinct bones.
+	Skeleton *Skeleton
 }
 
 // ParseMesh decodes a single mesh payload (an RSCF entry's payload whose resource-type code is

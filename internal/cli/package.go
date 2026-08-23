@@ -28,6 +28,7 @@ func newPackageCmd() *cobra.Command {
 
 func newPackageUnpackCmd() *cobra.Command {
 	var convert string
+	var meshFormat string
 	cmd := &cobra.Command{
 		Use:   "unpack <file> [output-dir]",
 		Short: "Extract every manifest-referenced sub-file and embedded texture from a level package",
@@ -35,6 +36,9 @@ func newPackageUnpackCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if convert != "dds" && convert != "png" {
 				return fmt.Errorf("--convert must be \"dds\" or \"png\", got %q", convert)
+			}
+			if meshFormat != "gltf" && meshFormat != "obj" && meshFormat != "both" {
+				return fmt.Errorf("--mesh-format must be \"gltf\", \"obj\", or \"both\", got %q", meshFormat)
 			}
 			path := args[0]
 			outDir := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -100,49 +104,73 @@ func newPackageUnpackCmd() *cobra.Command {
 			}
 
 			for _, m := range pkg.Meshes {
-				dest := filepath.Join(outDir, "meshes", relPathWithExt(m.Path, ".obj"))
-				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-					return err
+				if meshFormat == "gltf" || meshFormat == "both" {
+					dest, err := writeMeshFile(outDir, ".glb", m, writeGLB)
+					if err != nil {
+						return fmt.Errorf("%s: writing glTF: %w", m.Path, err)
+					}
+					fmt.Fprintln(os.Stderr, "wrote", dest)
 				}
-				f, err := os.Create(dest)
-				if err != nil {
-					return err
+				if meshFormat == "obj" || meshFormat == "both" {
+					dest, err := writeMeshFile(outDir, ".obj", m, writeOBJ)
+					if err != nil {
+						return fmt.Errorf("%s: writing OBJ: %w", m.Path, err)
+					}
+					fmt.Fprintln(os.Stderr, "wrote", dest)
 				}
-				err = writeOBJ(f, m)
-				closeErr := f.Close()
-				if err != nil {
-					return fmt.Errorf("%s: writing OBJ: %w", m.Path, err)
-				}
-				if closeErr != nil {
-					return closeErr
-				}
-				fmt.Fprintln(os.Stderr, "wrote", dest)
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&convert, "convert", "dds",
 		"output image format for embedded textures: dds (raw, default, always succeeds) or png (decoded, lossless; entries in an unsupported pixel format are skipped with a warning)")
+	cmd.Flags().StringVar(&meshFormat, "mesh-format", "gltf",
+		"output format for meshes: gltf (default; a real Blender-importable skinned armature for meshes with a matching skeleton, letting rigid sub-parts like a rifle's bolt be independently selected/posed by bone), obj (a plain, unrigged mesh — multi-part meshes are instead split into per-part o/g groups, for tools/workflows that don't handle glTF skinning), or both")
 	return cmd
 }
 
-// writeOBJ writes a mesh as a Wavefront OBJ: a "v" line per vertex position, a "vt" line per
-// vertex's first UV channel (Mesh.UV0 — the second channel, UV1, isn't exposed via OBJ), and a
-// triangle "f" line per Mesh triangle referencing them by the shared, 1-indexed (OBJ
+// writeMeshFile creates <outDir>/meshes/<m.Path-with-ext> (and any needed parent directories)
+// and calls write to fill it, closing the file and translating any write/close error into one
+// that names the mesh. Shared by the .glb and .obj output paths in newPackageUnpackCmd.
+func writeMeshFile(outDir, ext string, m asura.Mesh, write func(io.Writer, asura.Mesh) error) (string, error) {
+	dest := filepath.Join(outDir, "meshes", relPathWithExt(m.Path, ext))
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return "", err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return "", err
+	}
+	err = write(f, m)
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	return dest, nil
+}
+
+// writeOBJ writes a mesh as a Wavefront OBJ — the plain, unrigged alternative to the default
+// glTF/.glb output (see writeGLB): no armature, no bone weights, just static geometry, for
+// tools/workflows that don't handle glTF skinning. A "v" line per vertex position, a "vt" line
+// per vertex's first UV channel (Mesh.UV0 — the second channel, UV1, isn't exposed via OBJ), and
+// a triangle "f" line per Mesh triangle referencing them by the shared, 1-indexed (OBJ
 // convention) vertex/UV index. Mesh has no decoded normals, so this doesn't write "vn" lines;
 // Blender's own "Shade Smooth" / "Recalculate Normals" produces a reasonable result from the
 // geometry alone.
 //
-// When m.BoneNames is populated (a matching skeleton was found — see skeleton.go), triangles
-// are split by their first vertex's primary bone (BoneIDs[0]) — e.g. a rifle's Body/Bolt/
-// Trigger — independently of Mesh.Groups (that's the mesh's own *material* grouping, unrelated:
-// a real sample has one material group but five distinct bones). Each part switch emits both an
-// "o" (object) and a "g" (group) line: "o" is what makes Blender's OBJ importer split the
-// result into separate, independently selectable objects — "g" alone often doesn't, landing
-// everything in one combined object with named vertex groups instead, depending on import
-// settings — so both are written for reliability across Blender versions/settings. A part
-// switch mid-triangle-list just emits new "o"/"g" lines; OBJ doesn't require these to be
-// declared up front or triangles to already be sorted by part.
+// When m.Skeleton is populated (a matching skeleton was found — see skeleton.go), triangles are
+// split by their first vertex's primary bone (BoneIDs[0]) — e.g. a rifle's Body/Bolt/Trigger —
+// independently of Mesh.Groups (that's the mesh's own *material* grouping, unrelated: a real
+// sample has one material group but five distinct bones). Each part switch emits both an "o"
+// (object) and a "g" (group) line: "o" is what makes Blender's OBJ importer split the result
+// into separate, independently selectable objects — "g" alone often doesn't, landing everything
+// in one combined object with named vertex groups instead, depending on import settings — so
+// both are written for reliability across Blender versions/settings. A part switch
+// mid-triangle-list just emits new "o"/"g" lines; OBJ doesn't require these to be declared up
+// front or triangles to already be sorted by part.
 func writeOBJ(w io.Writer, m asura.Mesh) error {
 	buf := bufio.NewWriter(w)
 	for _, v := range m.Vertices {
@@ -185,10 +213,10 @@ func writeOBJ(w io.Writer, m asura.Mesh) error {
 // groupTrianglesByBone buckets a mesh's triangle indices by the part (bone) name each belongs
 // to, keyed by its first vertex's primary bone (BoneIDs[0]) — see writeOBJ. names is ordered by
 // ascending bone ID for a stable, sensible file order (e.g. a rifle's Body before its Bolt).
-// If m.BoneNames is empty (no matching skeleton found), returns a single "" group holding every
+// If m.Skeleton is nil (no matching skeleton found), returns a single "" group holding every
 // triangle in its original order, so writeOBJ skips the "o"/"g" lines entirely.
 func groupTrianglesByBone(m asura.Mesh) (names []string, indices map[string][]int) {
-	if len(m.BoneNames) == 0 {
+	if m.Skeleton == nil {
 		all := make([]int, len(m.Triangles))
 		for i := range all {
 			all[i] = i
@@ -196,15 +224,20 @@ func groupTrianglesByBone(m asura.Mesh) (names []string, indices map[string][]in
 		return []string{""}, map[string][]int{"": all}
 	}
 
+	bones := m.Skeleton.Bones
+	boneName := func(boneID int) string {
+		if boneID >= 0 && boneID < len(bones) && bones[boneID].Name != "" {
+			return bones[boneID].Name
+		}
+		return fmt.Sprintf("bone_%d", boneID)
+	}
+
 	indices = make(map[string][]int)
-	order := make([]int, 0, len(m.BoneNames))
+	order := make([]int, 0, len(bones))
 	seen := make(map[string]bool)
 	for i, t := range m.Triangles {
 		boneID := int(m.Vertices[t[0]].BoneIDs[0])
-		name := fmt.Sprintf("bone_%d", boneID)
-		if boneID >= 0 && boneID < len(m.BoneNames) && m.BoneNames[boneID] != "" {
-			name = m.BoneNames[boneID]
-		}
+		name := boneName(boneID)
 		indices[name] = append(indices[name], i)
 		if !seen[name] {
 			seen[name] = true
@@ -214,18 +247,16 @@ func groupTrianglesByBone(m asura.Mesh) (names []string, indices map[string][]in
 	sort.Ints(order)
 	names = make([]string, len(order))
 	for i, boneID := range order {
-		name := fmt.Sprintf("bone_%d", boneID)
-		if boneID >= 0 && boneID < len(m.BoneNames) && m.BoneNames[boneID] != "" {
-			name = m.BoneNames[boneID]
-		}
-		names[i] = name
+		names[i] = boneName(boneID)
 	}
 	return names, indices
 }
 
-// objAxes converts a decoded Mesh position into OBJ's own coordinate convention. As of this
-// version, that's the identity — no position transform — which is the result of composing the
-// two data points gathered so far, not a fresh guess:
+// objAxes converts a decoded Mesh position into OBJ's (and, since Blender's glTF importer
+// applies the identical Y-up-to-Z-up conversion its default OBJ import axis settings do,
+// writeGLB's) own coordinate convention. As of this version, that's the identity — no position
+// transform — which is the result of composing the two data points gathered so far, not a fresh
+// guess:
 //
 //  1. Writing a 90-degree-about-X rotation of the raw position (Y,Z -> -Z,Y) into the file
 //     came out with the model right-side-up but rotated 90 degrees the wrong way (barrel

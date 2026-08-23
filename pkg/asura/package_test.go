@@ -265,5 +265,8 @@ func TestParsePackageMeshSkinning(t *testing.T) {
 		if !vecAlmostEqual(m.Vertices[0].Position, want) {
 			t.Errorf("mesh %q vertex 0 Position = %v, want %v (skeleton not applied?)", m.Path, m.Vertices[0].Position, want)
 		}
+		if m.Skeleton == nil || m.Skeleton.Name != "Widget" {
+			t.Errorf("mesh %q Skeleton = %v, want the matched \"Widget\" skeleton", m.Path, m.Skeleton)
+		}
 	}
 }

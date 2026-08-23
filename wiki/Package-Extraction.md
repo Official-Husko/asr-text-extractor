@@ -128,17 +128,71 @@ unchanged — this is automatic and free for meshes that don't need it.
 that this tool doesn't fully decode (only what's needed to reach the bind-pose transform data);
 per-bone names are parsed best-effort past that point but aren't required for skinning to work.
 
-Exported OBJ files split into separate parts by bone (e.g. Body, Bolt, Bolt_Handle) whenever a
-skeleton was matched — a *different* grouping than the mesh's own material `Groups` (which
-"carcano" has only one of, despite having five distinct bones) — so individual rigid sub-parts
-can be selected/hidden/moved independently in Blender. Each part gets both an `o` (object) and
-a `g` (group) declaration — `o` is what actually makes Blender's OBJ importer create separate,
-independently selectable objects; `g` alone was tried first and didn't (landed everything in
-one combined mesh named after the file, inside a same-named collection — a real result from
-testing, not a guess) — and triangles are grouped and reordered so each part's block is fully
-contiguous in the file (each part name appears exactly once), not interleaved with others,
-since that's the form most OBJ importers handle reliably. Meshes with no matching skeleton
-export as a single ungrouped mesh, same as before.
+### Exporting a real, riggable armature (glTF, the default)
+
+A `Mesh` with a matched `Skeleton` isn't just repositioned — the whole `Skeleton` (not just
+derived bone names) travels with it (`Mesh.Skeleton`), so a caller can emit an actual
+Blender-importable armature rather than a single static, already-skinned mesh. `package unpack`
+does exactly this by default: for a skinned mesh, the exported `.glb` contains one glTF joint
+node per bone (translation/rotation set from that bone's bind-pose transform) and a single mesh
+bound to all of them via real GPU-style vertex skinning (`JOINTS_0`/`WEIGHTS_0`, using the same
+bone weights `Skeleton.Skin` itself consumes — spilling into a second `JOINTS_1`/`WEIGHTS_1` set
+only if some vertex actually uses more than 4 of `MeshVertex`'s 8 possible bone influences).
+Opened in Blender, this shows up as a real Armature object with named, individually selectable
+and posable bones (Body, Bolt, Bolt_Handle, Firing_Pin, Trigger for "carcano") driving one mesh —
+not five separate static objects glued together by export-time grouping.
+
+The joint nodes are deliberately **flat** (all children of one armature-root node, never nested
+under each other) rather than mirroring `Bone.ParentIndex` — nesting them would reintroduce the
+exact parent-composition bug described above (`Skeleton.Skin`'s formula doesn't compose through
+`ParentIndex` either, for the same reason). The practical effect: posing one bone in Blender does
+**not** automatically carry its children along the way a conventional hand-authored rig would
+(moving "Body" won't drag "Bolt" with it) — each bone poses independently. This is a known,
+documented limitation, not an oversight; building true parent-relative local transforms from
+this project's shared-frame bone data is possible in principle but wasn't attempted, since the
+immediate goal was a correctly-posed *static* bind pose with real, individually posable bones,
+not full hierarchical rig authoring. This is also, by design, only ever a static/bind-pose
+export — the game's `.anim` files aren't parsed and no animation data is imported; only the rig
+itself.
+
+Each joint's inverse bind matrix is derived algebraically from `Skeleton.Skin`'s own formula
+(see `inverseBindMatrix`'s doc comment in `internal/cli/gltf.go`) rather than computed
+numerically, and is checked against that derivation with a dedicated test
+(`TestInverseBindMatrixCancelsAtBindPose` in `internal/cli/gltf_test.go`) that verifies, for
+several representative bone transforms including the exact 180-degree-rotation shape the real
+skinning bug above had, that composing a joint's bind-pose transform with its own inverse bind
+matrix cancels to the identity — the condition a glTF skin needs to render unchanged at rest,
+before any posing is applied. This project has no way to visually verify a `.glb` file in
+Blender the way the skinning formula itself was checked, so this numeric self-consistency check
+stands in for that.
+
+**A note on the `glTF_not_exported` collection with an icosphere in it after importing:** this
+is normal, expected Blender behavior, not a defect in the exported file. Blender's glTF importer
+generates a small icosphere mesh as a *custom bone shape* for each bone, so bones stay
+visible/clickable in the viewport, and parks those shape meshes in a `glTF_not_exported`
+collection so they're excluded if the scene is ever re-exported — they're a Blender-only visual
+aid, unrelated to the actual rig or skinning data, and deleting that collection is safe (it just
+reverts bones to Blender's default display). Confirmed against public Blender/glTF-Blender-IO
+bug reports describing the exact same collection/icosphere combination on import for unrelated
+files. Blender 4.0.2 specifically had a real bug where these shapes came out disproportionately
+oversized (fixed in 4.1); if the icosphere looks huge rather than just present, that's most
+likely this, not something to chase in this project's exporter.
+
+### OBJ export (`--mesh-format obj`)
+
+Plain Wavefront OBJ export is still available via `--mesh-format obj` (or `both`, to get both
+formats) for tools/workflows that don't handle glTF skinning. OBJ has no concept of a skeleton
+or vertex groups, so multi-part meshes are instead split into separate parts by bone (e.g. Body,
+Bolt, Bolt_Handle) whenever a skeleton was matched — a *different* grouping than the mesh's own
+material `Groups` (which "carcano" has only one of, despite having five distinct bones) — so
+individual rigid sub-parts can still be selected/hidden/moved independently in Blender, just not
+posed as a rig. Each part gets both an `o` (object) and a `g` (group) declaration — `o` is what
+actually makes Blender's OBJ importer create separate, independently selectable objects; `g`
+alone was tried first and didn't (landed everything in one combined mesh named after the file,
+inside a same-named collection — a real result from testing, not a guess) — and triangles are
+grouped and reordered so each part's block is fully contiguous in the file (each part name
+appears exactly once), not interleaved with others, since that's the form most OBJ importers
+handle reliably. Meshes with no matching skeleton export as a single ungrouped mesh.
 
 ### A note on axis orientation
 
@@ -152,10 +206,17 @@ produced the original "upside-down" complaint) — the working theory is that th
 was actually a face-winding/normals problem, which the winding flip now addresses, but that's
 unconfirmed. If models still look wrong after this change, that's the part to revisit.
 
+This same `objAxes` identity mapping (and the same winding flip, via the shared `flipWinding`
+helper) is reused for `.glb` export, not re-derived separately: glTF mandates a Y-up convention,
+and Blender's glTF importer converts that to Blender's native Z-up with the exact same rotation
+its default OBJ import axis settings already apply — so whatever raw axis values make OBJ import
+correctly should make glTF import correctly too, without needing its own independent user-tested
+derivation.
+
 ## Commands
 
 ```text
-asr-text-extractor package unpack <file> [output-dir] [--convert dds|png]
+asr-text-extractor package unpack <file> [output-dir] [--convert dds|png] [--mesh-format gltf|obj|both]
 ```
 
 Extracts:
@@ -166,10 +227,13 @@ Extracts:
   `<output-dir>/textures/<relative-path>.dds` (or `.png` with `--convert png`) — same decoding
   and `--convert` behavior as the standalone [`texture`](Texture-Extraction.md) command
 - every decodable mesh (see Meshes above) found among the same tagged sections, to
-  `<output-dir>/meshes/<name>.obj` — a plain Wavefront OBJ with vertex positions, UVs, and
-  triangle faces, importable directly into Blender or any other 3D tool. No normals are
-  written (`Mesh` doesn't decode any) — use Blender's Shade Smooth / Recalculate Normals after
-  import.
+  `<output-dir>/meshes/<name>.glb` by default — binary glTF 2.0, importable directly into
+  Blender or any other modern 3D tool. Meshes with a matched skeleton (see Skinning above) come
+  out as a real, riggable armature with individually posable bones, not just static geometry.
+  Pass `--mesh-format obj` (or `both`, for both formats) to also/instead get a plain Wavefront
+  OBJ — no armature, but usable in tools that don't handle glTF skinning; see OBJ export above.
+  Neither format writes normals (`Mesh` doesn't decode any) — use Blender's Shade Smooth /
+  Recalculate Normals after import.
 
 If `output-dir` is omitted, it defaults to the input's base name. Creates subdirectories as
 needed, and prints a one-line diagnostic to stderr (`Entries: N  Textures: N  Meshes: N`)
@@ -179,7 +243,7 @@ before extracting.
 asr-text-extractor package unpack h_hellbase.pc
 # -> h_hellbase/files/LevelExportTemp0/ZA/Dust/ZA4_Mist_UnderLights_Small.pfx
 # -> h_hellbase/textures/graphics/za4/rocks/scan_rock_cluster_01_ar.dds
-# -> h_hellbase/meshes/ammo_crate_insideboxes_c.obj
+# -> h_hellbase/meshes/ammo_crate_insideboxes_c.glb
 # -> ... (282 files, 2502 textures, 550 meshes)
 
 asr-text-extractor package unpack h_hellbase.pc_entdata
@@ -198,12 +262,15 @@ repack path yet.
 - `PBRV` and every other non-`RSCF` tagged section between the manifest and its sub-files are
   skipped, not decoded.
 - `Mesh` doesn't decode normals, even though the reference implementation this was ported from
-  does. OBJ export therefore has no shading data; Blender's own recalculate-normals fills the
-  gap reasonably well for most props, static or skinned.
-- Skinning applies each vertex's bone weights, but OBJ itself has no concept of a skeleton or
-  vertex groups — the export is a single static (already-skinned) mesh in its bind pose, not a
-  riggable one. A richer export format (glTF, most likely) would be needed to carry the
-  skeleton itself across for actual re-posing/animation work in Blender.
+  does. Neither export format therefore has shading data; Blender's own recalculate-normals
+  fills the gap reasonably well for most props, static or skinned.
+- The glTF armature's joint nodes are flat (not nested per `Bone.ParentIndex`), so posing one
+  bone doesn't carry its children along automatically the way a conventional hand-authored rig
+  would — see "Exporting a real, riggable armature" above for why. Only the bind-pose rig itself
+  is exported; the game's own `.anim` animation data isn't parsed or imported.
+- OBJ export has no concept of a skeleton or vertex groups at all — multi-part meshes are
+  instead split into separate, independently selectable-but-not-posable objects by bone (see OBJ
+  export above). Use the default glTF export for anything that needs actual posing/rigging.
 - `HSKN`'s own on-disk layout has several fields gated by a version number and a flags bitfield
   that aren't decoded, only skipped past (bone names are the exception — parsed best-effort,
   since they aren't needed for skinning to work but are useful to have). Every real `HSKN`
@@ -213,8 +280,8 @@ repack path yet.
   to each mesh's own bounding box and that bounding-box sizes are physically plausible across a
   wide range of named objects, and skinning was confirmed by an actual user visual check in
   Blender on one real multi-part mesh (see Skinning above) — not a systematic check across many
-  rigged meshes. If an exported OBJ looks wrong once opened in a 3D viewer, that's a real signal
-  worth reporting back.
+  rigged meshes. If an exported mesh looks wrong once opened in a 3D viewer, that's a real
+  signal worth reporting back.
 - The manifest entry's trailing `uint32` field (after offset and size) is always `1` across
   every entry in the real samples tested; its meaning beyond that isn't confirmed.
 - `.snd`, `.cut`, and `.ent` sub-files extract as raw, uninterpreted bytes — no attempt is made
