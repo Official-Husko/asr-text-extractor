@@ -107,16 +107,19 @@ Bolt, Bolt_Handle, Firing_Pin, Trigger — all parented to Body, sharing Body's 
 genuine 180-degree turn, not identity — despite `(w,x,y,z)=(0,0,0,1)` reading like a "default"
 value at a glance) plus small (centimeter-scale) position-only offsets per bone.
 
-Each bone's transform is applied on its own, without composing it through its parent's rotation
-the way a general skeletal-animation system normally would — an earlier version did compose
-through the hierarchy (the textbook-correct approach), and it was wrong for this data: the
-root's real 180-degree rotation, composed into a child bone's own rotation, canceled out to a
-net identity (180+180=360), while composing it into the child's *position* still flipped that
-offset's sign — so the root mesh (correctly rotated) looked right while its rigid sub-parts
-didn't. That mismatch — main body correct, individually-positioned sub-parts upside-down — is
-exactly what a user visual check in Blender caught; the numeric bounding-box/edge-length
-validation this project could do on its own couldn't have caught it, since it doesn't check
-per-part *orientation*, only aggregate size and local coherence.
+Each vertex's final position is `rotate(bone.rotation, vertexPosition + bone.offset)` — adding
+the bone's own small offset to the raw vertex position *before* rotating the combined result,
+rather than the more textbook "rotate the vertex, translate separately" — and `Bone.ParentIndex`
+isn't consulted by this formula at all, unlike a general skeletal-animation system that would
+compose a child bone's transform through its parent's. Both of those choices were reverse
+engineered from a real render, not assumed upfront, across three attempts: composing through
+the parent hierarchy (textbook-correct in general) canceled the root's real 180-degree rotation
+into a net identity for child bones while still flipping their translation's sign, so the main
+body looked right but its rigid sub-parts (a rifle's bolt, trigger, etc.) didn't; dropping
+hierarchy composition fixed each part's *orientation* but put it in the wrong *place* relative
+to the body; only rotating the combined vertex-plus-offset together got both right at once. None
+of this project's own numeric checks (bounding-box size, triangle edge length) could have caught
+either intermediate wrong state — only an actual user visual check in Blender could, and did.
 
 Meshes with no matching skeleton, or whose vertices carry no bone weight at all, are returned
 unchanged — this is automatic and free for meshes that don't need it.

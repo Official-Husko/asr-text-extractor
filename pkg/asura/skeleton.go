@@ -144,47 +144,31 @@ func ParseSkeleton(data []byte) (*Skeleton, error) {
 	return &Skeleton{Name: name, Bones: bones}, nil
 }
 
-// worldTransform is a bone's bind-pose transform composed all the way to the root.
-type worldTransform struct {
-	pos [3]float32
-	rot [4]float32
-}
-
-// worldTransforms returns each bone's transform verbatim (LocalPos/LocalRot), *not* composed
-// through the parent hierarchy the way a conventional skeletal-animation system would.
-//
-// A first version of this function did compose child transforms through their parent's
-// rotation (the textbook-correct thing to do for a general bone hierarchy) — traced against a
-// real sample ("carcano") and found wrong: the root bone's rotation is a genuine 180-degree
-// turn about Z (not identity — a coincidence this project spent a while not noticing), and
-// composing it into children's *rotation* cancels out to a net identity (180+180=360), while
-// composing it into their *position* flips the offset's sign — meaning root-bone vertices get
-// the real 180-degree correction applied directly, but child-bone vertices silently don't get
-// it applied to their own vertex data at all, only to their translation, an inconsistency that
-// showed up as the root mesh looking right while its rigid sub-parts (a rifle's bolt, trigger,
-// etc.) didn't. Every bone in the one real skeleton available for testing is flat (parented
-// directly to the root, one level) and shares the *same* rotation as the root — consistent with
-// each bone's LocalPos/LocalRot already being expressed in the mesh's own shared coordinate
-// frame rather than relative to its parent, which is what applying every bone's own values
-// directly (no composition) amounts to. Whether a real multi-level hierarchy with differing
-// per-bone rotations would need composition after all isn't known — no sample to check against.
-func (s *Skeleton) worldTransforms() []worldTransform {
-	out := make([]worldTransform, len(s.Bones))
-	for i, b := range s.Bones {
-		out[i] = worldTransform{pos: b.LocalPos, rot: b.LocalRot}
-	}
-	return out
-}
-
 // Skin returns a copy of mesh's vertex positions repositioned according to the skeleton's
 // bind-pose bone transforms and each vertex's bone weights (see MeshVertex.BoneIDs/
-// BoneWeights): a standard linear-blend skin, `sum(weight_i * (bone_i.rotation * localPos +
-// bone_i.position)) / sum(weight_i)` over each vertex's up-to-8 non-zero-weight influences.
+// BoneWeights): a linear-blend skin, `sum(weight_i * rotate(bone_i.rot, localPos +
+// bone_i.pos)) / sum(weight_i)` over each vertex's up-to-8 non-zero-weight influences.
 // Vertices with no bone influence (all-zero weights, or every referenced bone ID out of range)
-// are returned unchanged, so calling this on a mesh that isn't actually rigged to skeleton is
-// harmless.
+// are returned unchanged, so calling this on a mesh that isn't actually rigged to a skeleton
+// is harmless.
+//
+// The `rotate(rot, localPos + pos)` shape — adding the bone's own offset to the vertex's raw
+// position *before* rotating the combined result, rather than the more textbook
+// `rotate(rot, localPos) + pos` (rotate the vertex, translate separately) — was reverse
+// engineered from a real sample, not assumed: a first version used the textbook formula, which
+// got a root bone's rotation right (a genuine 180-degree turn about Z — not identity, despite
+// looking like a "default" value) but, once ParentIndex composition was removed per
+// worldTransforms' old doc comment, put a child bone's own sub-part in the wrong place relative
+// to the root even though its *orientation* was now correct (user-caught: "the bolt is right
+// side up but now below the weapon, where before it was in the right spot"). Composing the
+// confirmed-right rotation with the confirmed-right position from the two prior (individually
+// wrong) attempts algebraically reduces to exactly this formula — see the git history for
+// `skeleton.go` around this change for the full worked derivation if it ever needs re-deriving.
+// Bone.ParentIndex isn't used by this formula at all; every real sample seen has every bone
+// sharing its parent's exact rotation and a small, independent translation, consistent with
+// each bone's fields already being expressed in one shared reference frame rather than
+// hierarchically relative to a parent.
 func (s *Skeleton) Skin(mesh *Mesh) [][3]float32 {
-	transforms := s.worldTransforms()
 	out := make([][3]float32, len(mesh.Vertices))
 	for i, v := range mesh.Vertices {
 		var totalWeight float32
@@ -195,12 +179,12 @@ func (s *Skeleton) Skin(mesh *Mesh) [][3]float32 {
 				continue
 			}
 			boneID := int(v.BoneIDs[j])
-			if boneID < 0 || boneID >= len(transforms) {
+			if boneID < 0 || boneID >= len(s.Bones) {
 				continue
 			}
 			wf := float32(w) / 255
-			t := transforms[boneID]
-			p := addVec3(t.pos, quatRotateVec(t.rot, v.Position))
+			bone := s.Bones[boneID]
+			p := quatRotateVec(bone.LocalRot, addVec3(v.Position, bone.LocalPos))
 			acc = addVec3(acc, scaleVec3(p, wf))
 			totalWeight += wf
 		}
