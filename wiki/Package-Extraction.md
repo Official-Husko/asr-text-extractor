@@ -53,6 +53,17 @@ package self-reference (0 payload bytes), and 2 further resource-type-0 entries
 (`"inst (dynamic)"`/`"inst (static)"`) that are neither — almost certainly a reference into the
 separate, much larger `INST` section, not extracted or interpreted.
 
+**Not every `AsuraZbb`-wrapped file has an `FNFO`/`RSFL` manifest at all.** A real DLC sample,
+`DLCData/disc_h_hellbase.asr` (a texture-override pack, not a level), decompresses straight into
+the *same* run of `RSCF`/`HSKN`/generic-tagged sections described above, but with no manifest
+and no sub-files anywhere: four `RSCF` texture entries interleaved with one small, unidentified
+`TTXT` section, then a zero footer. This was found via the [`scan`](Scan.md) command flagging it
+as a parse failure — and it wasn't a scan-only cosmetic problem: `package unpack` itself failed
+on this file too before the fix (0 textures extracted). The manifest is now only parsed if the
+file's very first section actually is one; otherwise every section is walked from the very start
+of the file, the same way a full package's post-manifest run always was. `Package.Entries` is
+simply empty for a file like this, since there's no manifest to populate it from.
+
 The internal layout of `PBRV` (a *separate* geometry/spatial-data block, several megabytes in a
 typical level — not the same thing as the RSCF mesh entries described below) has not been
 reverse-engineered and isn't parsed; it's only skipped over via its declared length, same as

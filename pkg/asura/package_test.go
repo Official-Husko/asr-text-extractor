@@ -106,6 +106,43 @@ func TestParsePackageBadMagic(t *testing.T) {
 	}
 }
 
+// buildGenericSection constructs a well-formed but otherwise-unparsed tagged section (tag +
+// total-size field + arbitrary content) — the shape skipTaggedSection's generic fallback needs
+// to skip over correctly regardless of what a section actually contains.
+func buildGenericSection(tag string, content []byte) []byte {
+	var buf bytes.Buffer
+	buf.WriteString(tag)
+	writeU32(&buf, uint32(8+len(content)))
+	buf.Write(content)
+	return buf.Bytes()
+}
+
+// TestParsePackageNoManifest covers a real-sample shape found in a Zombie Army 4 DLC file
+// (disc_h_hellbase.asr, a texture-override pack decompressed via AsuraZbb): the Asura magic is
+// followed straight by the same run of RSCF/HSKN/generic-tagged sections a full level package
+// has *between* its manifest and its sub-files — no FNFO/RSFL manifest, and no sub-files,
+// at all. parsePackageContent must recognize a missing manifest and fall straight into that
+// walk instead of erroring, still recovering the embedded texture and skipping the unknown
+// section (standing in for the real sample's own unidentified "TTXT" section) without issue.
+func TestParsePackageNoManifest(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(Magic[:])
+	buf.Write(buildRSCFEntry("autottl_disc_h_hellbase_0.dds", rscfResourceTypeTexture, fakeDDS(16)))
+	buf.Write(buildGenericSection("TTXT", []byte("unrelated unparsed content")))
+	writeU32(&buf, 0) // zero footer, matching the real sample
+
+	pkg, err := parsePackageContent(buf.Bytes())
+	if err != nil {
+		t.Fatalf("parsePackageContent: %v", err)
+	}
+	if len(pkg.Entries) != 0 {
+		t.Errorf("got %d manifest entries, want 0 (no FNFO/RSFL in this file)", len(pkg.Entries))
+	}
+	if len(pkg.Textures) != 1 || pkg.Textures[0].Path != "autottl_disc_h_hellbase_0.dds" {
+		t.Fatalf("Textures = %+v, want exactly the one embedded texture", pkg.Textures)
+	}
+}
+
 func TestParsePackageEntries(t *testing.T) {
 	entryAData := []byte("AAAA")
 	entryBData := []byte("BBBBBBBB")

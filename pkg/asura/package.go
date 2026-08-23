@@ -26,8 +26,9 @@ type Package struct {
 	Meshes   []Mesh
 }
 
-// ParsePackage decompresses an AsuraZbb-wrapped level-package file and parses its FNFO/RSFL
-// manifest, plus any embedded RSCF texture archive that follows.
+// ParsePackage decompresses an AsuraZbb-wrapped file and parses its FNFO/RSFL manifest (if it
+// has one — see parsePackageContent), plus any embedded RSCF texture/mesh entries and HSKN
+// skeletons that follow.
 func ParsePackage(raw []byte) (*Package, error) {
 	data, err := DecompressZbb(raw)
 	if err != nil {
@@ -36,43 +37,59 @@ func ParsePackage(raw []byte) (*Package, error) {
 	return parsePackageContent(data)
 }
 
+// parsePackageContent parses the decompressed content of an AsuraZbb-wrapped file. Most real
+// samples (.pc, .pc_entdata) are a full level package: an FNFO/RSFL sub-file manifest, followed
+// by a long run of tagged sections (see below) up to the manifest-referenced sub-files
+// themselves. But not every AsuraZbb-wrapped file has a manifest at all — a real DLC
+// "disc_h_hellbase.asr" sample (a texture-override pack, not a level) decompresses straight
+// into that same tagged-section run with no FNFO/RSFL and no sub-files following it: four RSCF
+// texture entries and one small, unidentified "TTXT" section (looks like a texture-atlas
+// lookup table for compositing medal-icon overlays onto the base texture, going by its
+// content — game-icon .tga paths and what look like UV-region floats — but not reverse
+// engineered beyond that; it doesn't need to be, since the generic tag+size skip below handles
+// any section type this parser doesn't specifically understand), then a zero footer. So the
+// manifest is only parsed if the file's very first section actually is one; otherwise every
+// section from offset 8 onward is walked exactly the same way a full package's post-manifest
+// run is.
 func parsePackageContent(data []byte) (*Package, error) {
 	if !CheckMagic(data) {
 		return nil, ErrBadMagic
 	}
-	rsflStart, tag, ok := skipTaggedSection(data, 8)
-	if !ok || tag != "FNFO" {
-		return nil, fmt.Errorf("asura: expected FNFO manifest header at offset 8")
-	}
 
-	manifest, rsflEnd, err := parseRSFLManifest(data, rsflStart)
-	if err != nil {
-		return nil, err
-	}
-
-	// Each entry's declared offset is relative to the end of the RSFL manifest section
-	// itself, not the start of the package's decompressed content — confirmed by real
-	// entries decoding to a clean small count field followed by the sub-file's own name
-	// repeated (e.g. offset -> "\x07\x00\x00\x00\x00\x00\x00\x00Explo_Bo..." exactly
-	// matching "Explo_Box_Sm_Chunk_13.anim") only once rsflEnd is added in.
 	pkg := &Package{}
+	pos := 8
 	extrasStart := len(data)
-	for _, e := range manifest {
-		start := rsflEnd + e.offset
-		if start < extrasStart {
-			extrasStart = start
+
+	if rsflStart, tag, ok := skipTaggedSection(data, 8); ok && tag == "FNFO" {
+		manifest, rsflEnd, err := parseRSFLManifest(data, rsflStart)
+		if err != nil {
+			return nil, err
 		}
-	}
-	for _, e := range manifest {
-		start := rsflEnd + e.offset
-		end := start + e.size
-		if start < 0 || e.size < 0 || end > len(data) || end < start {
-			continue // defensively skip a malformed entry rather than slice out of range
+
+		// Each entry's declared offset is relative to the end of the RSFL manifest section
+		// itself, not the start of the package's decompressed content — confirmed by real
+		// entries decoding to a clean small count field followed by the sub-file's own name
+		// repeated (e.g. offset -> "\x07\x00\x00\x00\x00\x00\x00\x00Explo_Bo..." exactly
+		// matching "Explo_Box_Sm_Chunk_13.anim") only once rsflEnd is added in.
+		extrasStart = len(data)
+		for _, e := range manifest {
+			start := rsflEnd + e.offset
+			if start < extrasStart {
+				extrasStart = start
+			}
 		}
-		pkg.Entries = append(pkg.Entries, PackageEntry{Path: e.path, Data: data[start:end]})
+		for _, e := range manifest {
+			start := rsflEnd + e.offset
+			end := start + e.size
+			if start < 0 || e.size < 0 || end > len(data) || end < start {
+				continue // defensively skip a malformed entry rather than slice out of range
+			}
+			pkg.Entries = append(pkg.Entries, PackageEntry{Path: e.path, Data: data[start:end]})
+		}
+		pos = rsflEnd
 	}
 
-	// Between the manifest and the manifest-referenced sub-files sits a long run of tagged
+	// Between the manifest (when there is one) and its manifest-referenced sub-files sits a long run of tagged
 	// sections — geometry/spatial data (PBRV, SDPH), a small unidentified one (IRTX), skeletons
 	// (HSKN — see skeleton.go), and many section types that turn out to be per-level-object
 	// records (CONA entity transforms, SDSM/SDEV spatial data, HSKL/HSBB/HSKE/HMPT
@@ -90,7 +107,6 @@ func parsePackageContent(data []byte) (*Package, error) {
 	// — see skeleton.go — isn't guaranteed to appear after that skeleton's own HSKN section in
 	// the file, so skinning can't be applied inline during this same walk).
 	skeletons := map[string]*Skeleton{}
-	pos := rsflEnd
 walk:
 	for pos < extrasStart {
 		if len(data)-pos < 4 {

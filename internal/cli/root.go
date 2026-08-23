@@ -34,7 +34,10 @@ It handles these chunk types:
   sound   - ASTS chunks: embedded WAV assets in a streamsounds manifest (extract only)
   texture - RSCF chunks: embedded DDS textures in a texture archive (extract only)
   package - AsuraZbb-compressed level packages (.pc, .pc_entdata): manifest
-            sub-files and embedded textures (extract only)`,
+            sub-files and embedded textures (extract only)
+
+Also: "scan" walks a whole folder and writes a text tree naming every recognized file's own
+entries (no data extracted) — useful for browsing a full game install's structure at a glance.`,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
@@ -47,6 +50,7 @@ It handles these chunk types:
 	root.AddCommand(newSoundCmd())
 	root.AddCommand(newTextureCmd())
 	root.AddCommand(newPackageCmd())
+	root.AddCommand(newScanCmd())
 	return root
 }
 

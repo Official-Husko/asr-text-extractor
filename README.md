@@ -20,6 +20,11 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
   variants of the same object are combined into one file by default (`--separate-lods` to opt
   out)
 
+It also has a **`scan`** command: walk a whole folder and write a text tree listing every
+recognized file's own entry names (sub-files, textures, meshes, strings, voice lines, ...) with
+no data extracted — for browsing a full game install's structure before committing to a real
+unpack of any one file.
+
 Mesh normals aren't decoded yet — the container/chunk reader (`pkg/asura`) is built to be
 extended as more of these formats are reverse-engineered. Recompiling/repacking beyond
 text/voice overrides is also planned (phase 2).

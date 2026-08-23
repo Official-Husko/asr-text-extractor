@@ -20,6 +20,9 @@ a short pointer; this is where the actual detail lives.
   [combined into one file by default](Package-Extraction.md#combining-lod-and-destroyed-state-variants-the-default))
   from `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`) (extract-only, no repacking
   yet).
+- [Scan](Scan.md) — walking a whole folder and writing a text tree of every recognized file's
+  own entry names (sub-files, textures, meshes, strings, voice lines, ...) with no data
+  extracted, for browsing a full game install's structure before committing to a real unpack.
 
 ## Planned (not yet implemented)
 
