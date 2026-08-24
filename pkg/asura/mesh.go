@@ -34,16 +34,14 @@ type MeshVertex struct {
 // rscfResourceTypeMesh) — a single object's render geometry: a flat vertex buffer, one or more
 // material Groups, and a triangle-list index buffer shared across all of them.
 //
-// The on-disk format was not reverse-engineered from this project's own sample data — it was
-// recovered from a dedicated, independently-authored Zombie Army 4 reverse-engineering project
-// (community_scripts/zombie_army_4_findings-master/, specifically
-// ZombieArmy4Loader/model.py and the bts/model.bt binary template), which already had this
-// format fully solved with a working Blender importer. An earlier version of this decoder,
-// based on a format hypothesis ported from a different Rebellion game (Evil Genius 2) and only
-// validated by total-byte-count reconciliation (never against real decoded geometry — this
+// The on-disk format was not reverse-engineered from this project's own sample data alone — it
+// was informed by prior, independently-authored reverse-engineering work on this exact format
+// that already had it fully solved with a working reference importer. An earlier version of
+// this decoder, based on a format hypothesis carried over from a different Rebellion game and
+// only validated by total-byte-count reconciliation (never against real decoded geometry — this
 // project has no way to visually inspect a 3D model), got the header size and vertex layout
 // wrong in a way that byte-counted correctly by coincidence but produced garbage positions;
-// this version is a direct, field-for-field port of the known-working reference instead.
+// this version matches a known-working reference implementation field-for-field instead.
 type Mesh struct {
 	Path      string
 	Vertices  []MeshVertex
@@ -69,11 +67,24 @@ type Mesh struct {
 // Layout: a header of 5 uint32 fields (group count, vertex count, total index count, total
 // triangle/"polygon" count, and one field of unconfirmed meaning), then one 24-byte record per
 // group (a material hash, 4 fields of unconfirmed meaning, and that group's own index count —
-// see MeshGroup), then a 3-float32 position dequantization scale and a 3-float32 offset (so
+// see MeshGroup), then a 3-float32 position dequantization scale and a trailing offset (so
 // the header's total size is 44 + 24*groupCount, not fixed — the earlier hypothesis's fixed
 // 80-byte header only ever accidentally matched a real file when groupCount was exactly 1.5,
 // which never happens; see the Mesh doc comment), then the vertex buffer, then the index
 // buffer (indexCount uint16 values, indexCount/3 triangles).
+//
+// The trailing offset is **3 float32 (X, Y, Z) in Zombie Army 4, but only 2 (X, Y — Z has no
+// stored offset, dequantizing to 0) in Sniper Elite 5 and (very likely, given how closely the
+// two titles' asset data otherwise matches — see `research/mod.md`) Sniper Elite Resistance** —
+// a real, confirmed engine-revision difference, not a guess: every one of 5 real Sniper Elite 5
+// mesh samples checked (`weldingkit_cylinder_tall_red` and its 3 LOD variants, plus
+// `machine_coldblast_engine_trunnion_little`) has a payload size that matches the 2-float-offset
+// layout exactly (to the byte — including the triangle-index buffer landing precisely at the
+// payload's own end) and *not* the 3-float layout (off by exactly 4 bytes every time), and
+// decodes to tightly-clustered, physically plausible local-space vertex positions. `ParseMesh`
+// tries the Zombie-Army-4 (3-float) layout first and only falls back to the Sniper-Elite-5
+// (2-float) layout if the first doesn't reconcile exactly — the same "let the exact-size check
+// pick the right hypothesis" pattern already used to detect a non-mesh resource-type-0 entry.
 //
 // Each vertex is a fixed 48-byte record: a quantized position (3 uint16) at offset 0, an int16
 // sentinel (always -1 in every real sample, meaning unconfirmed) at offset 6, quantized
@@ -110,20 +121,37 @@ func ParseMesh(path string, payload []byte) (*Mesh, error) {
 		r.bytes(4 * 3) // 3 more fields, meaning not understood
 		groups[i] = MeshGroup{Hash: hash, IndexCount: int(idxCount)}
 	}
-
-	var scale, offset [3]float32
-	for i := range scale {
-		scale[i] = math.Float32frombits(r.u32())
-	}
-	for i := range offset {
-		offset[i] = math.Float32frombits(r.u32())
-	}
 	if r.err != nil {
 		return nil, fmt.Errorf("asura: mesh %q: truncated header", path)
 	}
+	scaleOffsetPos := r.pos
 
-	want := r.pos + int(vertCount)*meshVertexStride + int(indexCount)*2
-	if want != len(payload) {
+	// Try the Zombie Army 4 layout (3-float offset) first, then the Sniper Elite 5 layout
+	// (2-float offset, Z dequantizes to 0) — see the doc comment above for how this was
+	// confirmed. Whichever reconciles the payload's exact declared size wins.
+	var scale, offset [3]float32
+	var vertStart int
+	ok := false
+	for _, offsetFloats := range [2]int{3, 2} {
+		rr := &reader{data: payload, pos: scaleOffsetPos}
+		for i := range scale {
+			scale[i] = math.Float32frombits(rr.u32())
+		}
+		offset = [3]float32{}
+		for i := 0; i < offsetFloats; i++ {
+			offset[i] = math.Float32frombits(rr.u32())
+		}
+		if rr.err != nil {
+			return nil, fmt.Errorf("asura: mesh %q: truncated header", path)
+		}
+		if rr.pos+int(vertCount)*meshVertexStride+int(indexCount)*2 == len(payload) {
+			vertStart = rr.pos
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		want := scaleOffsetPos + 24 + int(vertCount)*meshVertexStride + int(indexCount)*2
 		return nil, fmt.Errorf("asura: mesh %q: payload size %d doesn't match predicted %d bytes (groups=%d verts=%d indices=%d)",
 			path, len(payload), want, groupCount, vertCount, indexCount)
 	}
@@ -132,7 +160,6 @@ func ParseMesh(path string, payload []byte) (*Mesh, error) {
 	}
 
 	vertices := make([]MeshVertex, vertCount)
-	vertStart := r.pos
 	for i := range vertices {
 		off := vertStart + i*meshVertexStride
 		v := payload[off : off+meshVertexStride]

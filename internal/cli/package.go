@@ -56,7 +56,7 @@ func newPackageUnpackCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
 			}
-			fmt.Fprintf(os.Stderr, "Entries: %d  Textures: %d  Meshes: %d\n", len(pkg.Entries), len(pkg.Textures), len(pkg.Meshes))
+			fmt.Fprintf(os.Stderr, "Entries: %d  Textures: %d  Meshes: %d  Audio: %d\n", len(pkg.Entries), len(pkg.Textures), len(pkg.Meshes), len(pkg.Audio))
 
 			for _, e := range pkg.Entries {
 				dest := filepath.Join(outDir, "files", assetRelPath(e.Path))
@@ -103,6 +103,17 @@ func newPackageUnpackCmd() *cobra.Command {
 			}
 			if skipped > 0 {
 				fmt.Fprintf(os.Stderr, "%d of %d textures skipped (unsupported pixel format)\n", skipped, len(pkg.Textures))
+			}
+
+			for _, a := range pkg.Audio {
+				dest := filepath.Join(outDir, "audio", assetRelPath(a.Path))
+				if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(dest, a.Data, 0o644); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "wrote", dest)
 			}
 
 			if separateLODs {

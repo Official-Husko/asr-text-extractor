@@ -10,7 +10,8 @@ It reads and writes the `"Asura   "`-signed container format's chunk types:
   unpack, translate, and repack
 - **`voice`** — `DLLN` chunks: many voice-line entries per file (e.g. `MP.pc_en`) — unpack,
   translate, and repack
-- **`sound`** — `ASTS` chunks: embedded WAV assets in a `.streamsounds` manifest — extract only
+- **`sound`** — embedded WAV assets, from either an `ASTS` `.streamsounds` manifest or an
+  RSCF-based `.pc.sounds` audio archive (auto-detected) — extract only
 - **`texture`** — `RSCF` chunks: embedded textures in a `.pc_textures` archive — extract only,
   as raw `.dds` or, with `--convert png`, as decoded lossless PNG
 - **`package`** — `AsuraZbb`-compressed level packages (`.pc`, `.pc_entdata`): manifest
@@ -28,6 +29,34 @@ unpack of any one file.
 Mesh normals aren't decoded yet — the container/chunk reader (`pkg/asura`) is built to be
 extended as more of these formats are reverse-engineered. Recompiling/repacking beyond
 text/voice overrides is also planned (phase 2).
+
+## Game support
+
+The container format is shared across Rebellion's Asura-engine titles, but not every chunk type
+has stayed identical between them — some features are confirmed working on one game and
+confirmed *broken* on another.
+
+| Game | Text / Voice | Sound | Texture | Package / Mesh |
+|---|---|---|---|---|
+| Zombie Army 4 | ✅ | ✅ | ✅ | ✅ |
+| Sniper Elite 5 | ✅ | ⚠️ ¹ | ✅ | ✅ ² |
+| Sniper Elite Resistance | ✅ | ⚠️ ¹ ³ | ✅ | ✅ ² |
+| Sniper Elite 4 | ❔ ⁴ | ❔ ⁴ | ❔ ⁴ | ❔ ⁴ |
+
+¹ Streamsounds (`ASTS`) audio extraction is confirmed broken on this title (an out-of-range
+offset in a real sample); the alternate RSCF-based `.pc.sounds` audio archive format is
+confirmed working and is the reliable option here.
+² Needed a real, confirmed engine-revision-specific fix to work: this title's mesh format uses a
+2-float position offset instead of Zombie Army 4's 3-float one. `ParseMesh` now detects and
+handles both automatically — see the wiki for the byte-level derivation.
+³ Not independently tested against this specific title; based on directly testing Sniper Elite
+5, given how closely the two titles' asset data matches.
+⁴ No installation has been available to test against during development. Text/voice support is
+inherited from this project's original format sources (themselves built for Sniper Elite 4) but
+never independently confirmed; every other feature is completely untested for this title.
+
+See the wiki's **[per-game pages](wiki/Home.md#games)** for the full detail behind every ✅/⚠️/❔
+above — what was actually tested, real error messages, and sample files used.
 
 ## Quick start
 
@@ -53,5 +82,6 @@ Run `go test ./...` to run the test suite.
 
 ## Credit
 
-Ports the file-format understanding from the original **AsrTextExtractor** C# project (no
-license file was published with it) to a cross-platform Go implementation.
+Every format in this repository is an original Go implementation, verified against real game
+files. See [CREDITS.md](CREDITS.md) for the prior work that informed some of that
+understanding.

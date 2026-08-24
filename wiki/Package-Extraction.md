@@ -1,7 +1,9 @@
 # Package Extraction
 
 Covers the `package` command: extracting manifest-referenced sub-files and embedded textures
-from an `AsuraZbb`-compressed level-package file (`.pc`, `.pc_entdata`).
+from an `AsuraZbb`-compressed level-package file (`.pc`, `.pc_entdata`). The same command also
+works directly on `.gui` files (UI menu/texture archives, `AsuraZbb`-wrapped the same way, just
+with an `FNFO` header that has no `RSFL` manifest behind it — see below).
 
 ## Background
 
@@ -64,6 +66,22 @@ file's very first section actually is one; otherwise every section is walked fro
 of the file, the same way a full package's post-manifest run always was. `Package.Entries` is
 simply empty for a file like this, since there's no manifest to populate it from.
 
+**A third variant has an `FNFO` section, but it's never followed by an `RSFL` manifest either** —
+found via the same [`scan`](Scan.md) whole-install survey, this time flagging every real
+`GUIMenu/*.gui` file and `Chars/mp.pc` with `"expected RSFL manifest at offset 32"`. In both real
+samples, the section immediately after `FNFO` is already `RSCF` (or, for `mp.pc`, just the zero
+footer) — never `RSFL`. `FNFO`'s own 16-byte body in this variant is `{1, 0, totalLen-4, 8}`
+(confirmed identical in shape across two very different real samples: a 36-byte `mp.pc` and a
+20MB `frontend.gui`, with the third field exactly matching each file's own total decompressed
+length minus its trailing 4-byte zero footer both times) — a self-describing "this whole file,
+no manifest" header rather than a real entry table. The fix mirrors the no-manifest-at-all case:
+before committing to parsing an `RSFL` manifest, the parser now peeks at whether an actual
+`"RSFL"` tag is really there; if not, `FNFO` is left for the generic tagged-section walk to skip
+over. Before this fix, `frontend.gui` — a real 20MB UI texture archive (icons/atlases) — was
+completely unextractable; it now yields 40 real textures. `mp.pc` decompresses to just the bare
+36-byte `FNFO` stub with nothing else in it at all (a placeholder file, not a bug — `Entries: 0
+Textures: 0 Meshes: 0 Audio: 0` is the correct result for it).
+
 The internal layout of `PBRV` (a *separate* geometry/spatial-data block, several megabytes in a
 typical level — not the same thing as the RSCF mesh entries described below) has not been
 reverse-engineered and isn't parsed; it's only skipped over via its declared length, same as
@@ -73,25 +91,31 @@ every other unidentified section.
 
 Some `RSCF` entries (resource-type 0) are per-object render meshes rather than textures: a
 header, one or more material groups, a vertex buffer, and a shared triangle-index buffer. This
-format was **not** reverse-engineered from this project's own sample data — it's a direct,
-field-for-field port of a dedicated, independently-authored Zombie Army 4 reverse-engineering
-project's own working Blender importer
-(`zombie_army_4_findings-master/ZombieArmy4Loader/model.py`), which had this format fully
-solved already. (An earlier version of this tool's mesh support was instead based on a format
-hypothesis ported from a *different* Rebellion game, Evil Genius 2 — that version's exported
-models turned out to be garbled nonsense once actually opened in Blender, not the "close
-enough" the numbers alone had suggested; see `pkg/asura/mesh.go`'s doc comments for what went
-wrong. That version is gone from the code now, but its lesson stands: a format hypothesis
-validated only by total-byte-count reconciliation, with no way to visually inspect the result,
-is not validated.)
+format was **not** reverse-engineered from this project's own sample data alone — it matches a
+known-working reference implementation of the format field-for-field. (An earlier version of
+this tool's mesh support was instead based on a format hypothesis carried over from a
+*different* Rebellion game — that version's exported models turned out to be garbled nonsense
+once actually opened in Blender, not the "close enough" the numbers alone had suggested; see
+`pkg/asura/mesh.go`'s doc comments for what went wrong. That version is gone from the code now,
+but its lesson stands: a format hypothesis validated only by total-byte-count reconciliation,
+with no way to visually inspect the result, is not validated.)
 
 The header is `44 + 24*groupCount` bytes: 5 `uint32` fields (group count, vertex count, total
 index count, a redundant triangle count, and one unconfirmed field), then one 24-byte record
 per group (a material hash plus that group's own index count), then a 3-float position
-dequantization scale and a 3-float offset. Per vertex (48-byte stride): a quantized position (3
+dequantization scale and a trailing offset. Per vertex (48-byte stride): a quantized position (3
 × `uint16` at offset 0, dequantized per axis as `raw/32767 * (scale/2) + offset`), two UV
 channels (2 × half-float each) at offsets 24 and 28, and up to 8 bone weight/index pairs used
 for skinning (see below). Normals aren't decoded.
+
+**The trailing offset is 3 floats (X, Y, Z) in Zombie Army 4, but only 2 (X, Y — Z has no
+stored offset) in Sniper Elite 5 and Sniper Elite Resistance** — a real, confirmed
+engine-revision difference (see [games/Sniper-Elite-5.md](games/Sniper-Elite-5.md#mesh-decoding-the-fix)
+for the full byte-level derivation), not a guess. `ParseMesh` tries the 3-float layout first and
+falls back to the 2-float one only if the first doesn't reconcile the payload's own declared
+size exactly — the same size-reconciliation check that already distinguishes a real mesh entry
+from an unrelated resource-type-0 blob (see below) is what safely picks the right layout, with
+no separate per-game flag needed.
 
 All group counts are supported — real samples have 1, 2, 4, and 10. Validated by checking that
 decoded triangle edge lengths are small relative to each mesh's own bounding box (i.e.
@@ -342,9 +366,14 @@ Extracts:
   `both`, for both formats) to also/instead get a plain Wavefront OBJ — no armature, but usable
   in tools that don't handle glTF skinning; see OBJ export above. Neither format writes normals
   (`Mesh` doesn't decode any) — use Blender's Shade Smooth / Recalculate Normals after import.
+- any embedded RSCF audio entries (resource-type 3, see [Sound Extraction](Sound-Extraction.md))
+  found among the same tagged sections, to `<output-dir>/audio/<relative-path>.wav` — not yet
+  seen in a real sample (every real audio RSCF section found so far has been a standalone
+  `.pc.sounds` file, extracted via `sound unpack` instead), but handled the same way if one
+  ever turns up.
 
 If `output-dir` is omitted, it defaults to the input's base name. Creates subdirectories as
-needed, and prints a one-line diagnostic to stderr (`Entries: N  Textures: N  Meshes: N`)
+needed, and prints a one-line diagnostic to stderr (`Entries: N  Textures: N  Meshes: N  Audio: N`)
 before extracting.
 
 ```sh
@@ -360,13 +389,25 @@ asr-text-extractor package unpack h_hellbase.pc_entdata
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.nav
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.cut
 # -> h_hellbase.pc_entdata/files/LevelExportTemp0/HellBase.ent
-# (no textures or meshes section in this file — Textures: 0  Meshes: 0)
+# (no textures or meshes section in this file — Textures: 0  Meshes: 0  Audio: 0)
+
+asr-text-extractor package unpack GUIMenu/frontend.gui --convert png
+# -> frontend/textures/graphics/autottl_frontend_4.png
+# (a .gui file is itself an AsuraZbb package, just with an FNFO header and no RSFL manifest
+# behind it — see the "third variant" note above; Entries: 0  Textures: 40  Meshes: 0  Audio: 0)
 ```
 
 Like `sound` and `texture`, this is extract-only: there's no `--format`/`--encoding` and no
 repack path yet.
 
 ## Known limitations
+
+See [games/](games/Zombie-Army-4.md) for per-game verification status — mesh decoding, sub-file
+extraction, and texture extraction are all confirmed working on every title tested (Zombie Army
+4, Sniper Elite 5, Sniper Elite Resistance). Mesh decoding needed a real, confirmed
+engine-revision-specific fix to get there — see
+[games/Sniper-Elite-5.md](games/Sniper-Elite-5.md#mesh-decoding-the-fix) for the byte-level
+detail.
 
 - `PBRV` and every other non-`RSCF` tagged section between the manifest and its sub-files are
   skipped, not decoded.
@@ -413,3 +454,13 @@ repack path yet.
 - Extract-only: no way to repack an edited sub-file or texture back into a package yet (true of
   every asset type except text/voice strings — see
   [Home](Home.md#planned-not-yet-implemented)).
+- `.navmesh` files (e.g. `navmesh/Hellbase/h_hellbase_actor.navmesh`) are `AsuraZbb`-wrapped
+  like a `.pc`, but decompress into an unrelated `ARNM`-tagged chunk — a large, real navigation
+  mesh, not a manifest — that this tool doesn't understand yet. `package unpack` runs against
+  one without erroring (it's silently skipped by the generic tagged-section walk, matching its
+  own declared length) but extracts nothing. Initial research (not yet implemented): `ARNM`
+  contains hundreds of variable-length records each starting with a repeating `"VAND"` marker,
+  most spanning roughly 300-450 bytes, whose payload contains float triples that look like real,
+  spatially-clustered level-space vertex coordinates (some values repeat 2-3 times within one
+  record, consistent with a triangle/polygon fan sharing vertices) — a genuine navmesh geometry
+  format, not yet cracked.

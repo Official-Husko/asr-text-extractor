@@ -18,11 +18,12 @@ type PackageEntry struct {
 // the manifest-referenced sub-files, plus any embedded RSCF texture and mesh entries found
 // among the many tagged sections (geometry/spatial data, per-object records, etc. — see
 // parsePackageContent) that sit between the manifest and those sub-files. Not every package
-// has RSCF sections there (e.g. .pc_entdata doesn't), in which case Textures and Meshes are
-// both empty.
+// has RSCF sections there (e.g. .pc_entdata doesn't), in which case Textures, Audio, and Meshes
+// are all empty.
 type Package struct {
 	Entries  []PackageEntry
 	Textures []TextureEntry
+	Audio    []AudioEntry
 	Meshes   []Mesh
 }
 
@@ -50,6 +51,22 @@ func ParsePackage(raw []byte) (*Package, error) {
 // any section type this parser doesn't specifically understand), then a zero footer. So the
 // manifest is only parsed if the file's very first section actually is one; otherwise every
 // section from offset 8 onward is walked exactly the same way a full package's post-manifest
+//
+// A third, distinct variant surfaced later via the "scan" command's own whole-install survey:
+// some AsuraZbb-wrapped files (real samples: every "GUIMenu/*.gui" file, and "Chars/mp.pc")
+// DO have a leading FNFO section, but it's never followed by an RSFL manifest at all — the very
+// next section right after FNFO ends is already RSCF (textures) or another generic tag. FNFO's
+// own 16-byte body in this variant is `{1, 0, totalLen-4, 8}` (confirmed identical across a
+// 36-byte and, separately, a 20MB real sample — the third field exactly matches the file's own
+// total decompressed length minus the trailing 4-byte zero footer both times), i.e. a
+// self-describing "this whole file, no manifest" header rather than a real entry table. Before
+// committing to parseRSFLManifest, the code below (hasTagAt) now peeks at whether an actual
+// "RSFL" tag follows FNFO; if not, FNFO is left for the generic tagged-section walk to skip over
+// (skipTaggedSection already handles it via FNFO's own declared size), exactly like the
+// no-FNFO-at-all case above. Before this fix, both of the real samples above failed outright
+// with "expected RSFL manifest at offset 32" — a real, user-facing parse failure, not just a
+// scan-command cosmetic gap; `.gui` files in particular are large real texture archives (UI
+// icons/atlases) that were completely unextractable until this was understood.
 // run is.
 func parsePackageContent(data []byte) (*Package, error) {
 	if !CheckMagic(data) {
@@ -60,7 +77,7 @@ func parsePackageContent(data []byte) (*Package, error) {
 	pos := 8
 	extrasStart := len(data)
 
-	if rsflStart, tag, ok := skipTaggedSection(data, 8); ok && tag == "FNFO" {
+	if rsflStart, tag, ok := skipTaggedSection(data, 8); ok && tag == "FNFO" && hasTagAt(data, rsflStart, "RSFL") {
 		manifest, rsflEnd, err := parseRSFLManifest(data, rsflStart)
 		if err != nil {
 			return nil, err
@@ -122,6 +139,8 @@ walk:
 				pkg.Textures = append(pkg.Textures, *tex)
 			} else if m := entry.asMesh(); m != nil {
 				pkg.Meshes = append(pkg.Meshes, *m)
+			} else if aud := entry.asAudio(); aud != nil {
+				pkg.Audio = append(pkg.Audio, *aud)
 			}
 			pos = next
 		case "HSKN":
@@ -188,8 +207,8 @@ type manifestEntry struct {
 // all 282 entries in a real sample once alignment is computed this way (a strong
 // self-consistency check — the greedy-skip approach got it right for 280 of those 282, with
 // the 2 failures exactly matching the entries with a zero-byte-first offset), and matches
-// independent community reference decoders (unpack_rebellion.py, tools_ZA4.py — see
-// CLAUDE.md), which parse this same field as always-1 too. The offset is relative to the end
+// independent reference implementations of the format, which parse this same field as
+// always-1 too. The offset is relative to the end
 // of this manifest section (i.e. to the second return value) — not the start of the package's
 // decompressed content — confirmed by real entries decoding cleanly only once that base is
 // added: e.g. one real .anim entry decodes to a small count field followed by the sub-file's
@@ -223,6 +242,13 @@ func parseRSFLManifest(data []byte, start int) ([]manifestEntry, int, error) {
 		entries = append(entries, manifestEntry{path: path, offset: int(offset), size: int(size)})
 	}
 	return entries, end, nil
+}
+
+// hasTagAt reports whether data[pos:pos+4] is exactly tag, without consuming or validating
+// anything past it — used to peek at what follows a section before committing to parse it as
+// that section type.
+func hasTagAt(data []byte, pos int, tag string) bool {
+	return len(data)-pos >= 4 && string(data[pos:pos+4]) == tag
 }
 
 // skipTaggedSection returns the position right after a generic Asura "tag+size" section (a

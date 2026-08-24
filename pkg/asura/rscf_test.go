@@ -6,8 +6,8 @@ import (
 )
 
 // buildRSCFEntry constructs one RSCF entry in the shape confirmed against independent
-// community Asura-format reference decoders (unpack_rebellion.py, tools_ZA4.py — see
-// CLAUDE.md): tag, a total-size field, 2 fields of unconfirmed meaning, a resource-type code,
+// reference implementations of the format: tag, a total-size field, 2 fields of unconfirmed
+// meaning, a resource-type code,
 // a flags field of unconfirmed meaning, a payload-size field, a path in the 4-byte-chunk-
 // aligned string encoding alignedString implements, and finally exactly payloadSize bytes of
 // payload.
@@ -36,6 +36,11 @@ func buildRSCFEntry(path string, resType uint32, payload []byte) []byte {
 
 func fakeDDS(n int) []byte {
 	b := append([]byte("DDS "), bytes.Repeat([]byte{0xAB}, n)...)
+	return b
+}
+
+func fakeWAV(n int) []byte {
+	b := append([]byte("RIFF"), bytes.Repeat([]byte{0xAB}, n)...)
 	return b
 }
 
@@ -70,6 +75,64 @@ func TestParseRSCF(t *testing.T) {
 	}
 	if !bytes.Equal(f.Entries[1].Data, fakeDDS(64)) {
 		t.Errorf("entry 1 Data mismatch")
+	}
+}
+
+// TestParseRSCFAudioEntry regression-tests a real case: a standalone `.pc.sounds` file
+// (`Chars/mp.pc.pc.sounds` in a real Zombie Army 4 sample) is a plain "Asura   "-signed file
+// whose very first section is RSCF, containing resource-type-3 (audio) entries whose payload is
+// a complete WAV file — sharing the exact same tag+size+type framing as texture entries, just a
+// different resource-type code and payload magic.
+func TestParseRSCFAudioEntry(t *testing.T) {
+	aud := buildRSCFEntry(`sounds\hud\collected.wav`, rscfResourceTypeAudio, fakeWAV(40))
+	tex := buildRSCFEntry(`\graphics\a.tga`, rscfResourceTypeTexture, fakeDDS(20))
+
+	var buf bytes.Buffer
+	buf.Write(Magic[:])
+	buf.Write(aud)
+	buf.Write(tex)
+	buf.Write(make([]byte, 4))
+
+	f, err := ParseRSCF(buf.Bytes())
+	if err != nil {
+		t.Fatalf("ParseRSCF: %v", err)
+	}
+	if len(f.Entries) != 1 {
+		t.Fatalf("got %d texture entries, want 1", len(f.Entries))
+	}
+	if len(f.AudioEntries) != 1 {
+		t.Fatalf("got %d audio entries, want 1", len(f.AudioEntries))
+	}
+	if f.AudioEntries[0].Path != `sounds\hud\collected.wav` {
+		t.Errorf("audio entry Path = %q", f.AudioEntries[0].Path)
+	}
+	if !bytes.Equal(f.AudioEntries[0].Data, fakeWAV(40)) {
+		t.Errorf("audio entry Data mismatch")
+	}
+}
+
+// TestParseRSCFSkipsAudioTypeWithBadPayload mirrors
+// TestParseRSCFSkipsTextureTypeWithBadPayload: an entry claiming resource-type-3 (audio) whose
+// payload doesn't actually start with the RIFF magic shouldn't be trusted.
+func TestParseRSCFSkipsAudioTypeWithBadPayload(t *testing.T) {
+	bad := buildRSCFEntry(`sounds\unknown.bin`, rscfResourceTypeAudio, bytes.Repeat([]byte{0xCD}, 16))
+	good := buildRSCFEntry(`sounds\a.wav`, rscfResourceTypeAudio, fakeWAV(20))
+
+	var buf bytes.Buffer
+	buf.Write(Magic[:])
+	buf.Write(bad)
+	buf.Write(good)
+	buf.Write(make([]byte, 4))
+
+	f, err := ParseRSCF(buf.Bytes())
+	if err != nil {
+		t.Fatalf("ParseRSCF: %v", err)
+	}
+	if len(f.AudioEntries) != 1 {
+		t.Fatalf("got %d audio entries, want 1 (the bad-payload entry should be skipped, not aborted)", len(f.AudioEntries))
+	}
+	if f.AudioEntries[0].Path != `sounds\a.wav` {
+		t.Errorf("surviving entry Path = %q", f.AudioEntries[0].Path)
 	}
 }
 

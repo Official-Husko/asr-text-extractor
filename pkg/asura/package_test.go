@@ -143,6 +143,33 @@ func TestParsePackageNoManifest(t *testing.T) {
 	}
 }
 
+// TestParsePackageFNFOWithoutRSFL covers a third real-sample shape, found via the "scan"
+// command's own whole-install survey: every "GUIMenu/*.gui" file, and "Chars/mp.pc", have a
+// leading FNFO section (unlike TestParsePackageNoManifest's case, where there's no FNFO at
+// all) but it's never followed by an RSFL manifest — the very next section right after FNFO is
+// already RSCF or another generic tag. Before the fix, this failed outright with "expected
+// RSFL manifest at offset 32" on both real files (frontend.gui, a 20MB real UI texture archive,
+// was completely unextractable). parsePackageContent must peek at what follows FNFO and only
+// treat it as a real manifest header when an actual RSFL tag is there.
+func TestParsePackageFNFOWithoutRSFL(t *testing.T) {
+	var buf bytes.Buffer
+	buf.Write(Magic[:])
+	buf.Write(buildGenericSection("FNFO", []byte{1, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0, 8, 0, 0, 0}))
+	buf.Write(buildRSCFEntry("autottl_frontend_0.dds", rscfResourceTypeTexture, fakeDDS(16)))
+	writeU32(&buf, 0) // zero footer, matching the real samples
+
+	pkg, err := parsePackageContent(buf.Bytes())
+	if err != nil {
+		t.Fatalf("parsePackageContent: %v", err)
+	}
+	if len(pkg.Entries) != 0 {
+		t.Errorf("got %d manifest entries, want 0 (FNFO here has no RSFL manifest)", len(pkg.Entries))
+	}
+	if len(pkg.Textures) != 1 || pkg.Textures[0].Path != "autottl_frontend_0.dds" {
+		t.Fatalf("Textures = %+v, want exactly the one embedded texture", pkg.Textures)
+	}
+}
+
 func TestParsePackageEntries(t *testing.T) {
 	entryAData := []byte("AAAA")
 	entryBData := []byte("BBBBBBBB")

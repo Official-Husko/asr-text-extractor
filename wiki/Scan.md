@@ -86,6 +86,12 @@ else. Likewise, a file whose magic matches but whose content fails to parse gets
 
 ## Known limitations
 
+See [games/](games/Zombie-Army-4.md) for per-game verification status — `scan` runs correctly
+on every title tested so far, and its reported counts for a given file are only as accurate as
+that file type's own extraction support (see
+[games/Sniper-Elite-5.md](games/Sniper-Elite-5.md#mesh-decoding-the-fix) for one case where a
+real, confirmed extraction limitation was found — and later fixed — this way).
+
 - Detects HTXT/ASTS/RSCF by their very first chunk tag, and otherwise falls back to a DLLN scan
   (since voice entries are scattered through otherwise-unknown binary data — see
   [Text & Voice Extraction](Text-and-Voice-Extraction.md)) — a plain `"Asura   "`-signed file

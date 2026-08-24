@@ -25,6 +25,23 @@ a short pointer; this is where the actual detail lives.
   own entry names (sub-files, textures, meshes, strings, voice lines, ...) with no data
   extracted, for browsing a full game install's structure before committing to a real unpack.
 
+## Games
+
+The pages above describe how each feature works in general. What actually works *for a specific
+game* varies — the underlying container format is shared across Rebellion's Asura-engine
+titles, but not every chunk type has stayed identical between them. Each page below documents
+real, verified (or explicitly not-yet-verified) status per feature for one title, with the
+reasoning behind any limitation spelled out in full rather than left as a one-line caveat.
+
+- [Zombie Army 4](games/Zombie-Army-4.md) — the primary development and test target; every
+  feature is verified working.
+- [Sniper Elite 5](games/Sniper-Elite-5.md) — mostly working, with two confirmed, explained
+  incompatibilities (mesh decoding, streamsounds audio).
+- [Sniper Elite Resistance](games/Sniper-Elite-Resistance.md) — closely related to Sniper Elite
+  5; verified where directly tested, honestly marked "not independently tested" elsewhere.
+- [Sniper Elite 4](games/Sniper-Elite-4.md) — no installation available to test against; support
+  is inherited from this project's original format sources, not independently verified.
+
 ## Planned (not yet implemented)
 
 - Mesh normals — not decoded, so neither export format has shading data; Blender's own

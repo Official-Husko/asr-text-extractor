@@ -59,6 +59,59 @@ func buildMeshPayload(t *testing.T, groups []MeshGroup, scale, offset [3]float32
 	return buf.Bytes()
 }
 
+// buildMeshPayloadSE5 is buildMeshPayload's twin for the Sniper Elite 5 header shape: identical
+// in every respect except the trailing offset is 2 float32 (X, Y) rather than 3 — confirmed
+// against 5 real Sniper Elite 5 mesh samples, see mesh.go's ParseMesh doc comment. offset[2] is
+// only used by the caller to compute the expected dequantized Z position (which should come out
+// as 0, since no Z offset is stored on disk), never written to the payload itself.
+func buildMeshPayloadSE5(t *testing.T, groups []MeshGroup, scale [3]float32, offsetXY [2]float32, verts [][3]uint16, uv0, uv1 [][2]uint16, tris [][3]uint16) []byte {
+	t.Helper()
+	indexCount := len(tris) * 3
+
+	var buf bytes.Buffer
+	writeU32(&buf, uint32(len(groups)))
+	writeU32(&buf, uint32(len(verts)))
+	writeU32(&buf, uint32(indexCount))
+	writeU32(&buf, uint32(len(tris)))
+	writeU32(&buf, 0)
+
+	for _, g := range groups {
+		writeU32(&buf, g.Hash)
+		writeU32(&buf, 0)
+		writeU32(&buf, uint32(g.IndexCount))
+		writeU32(&buf, 0)
+		writeU32(&buf, 0)
+		writeU32(&buf, 0)
+	}
+
+	for _, s := range scale {
+		writeU32(&buf, math.Float32bits(s))
+	}
+	for _, o := range offsetXY {
+		writeU32(&buf, math.Float32bits(o)) // no Z offset stored — this is the whole difference
+	}
+
+	for i, v := range verts {
+		writeU16(&buf, v[0])
+		writeU16(&buf, v[1])
+		writeU16(&buf, v[2])
+		buf.Write(make([]byte, 18))
+		writeU16(&buf, uv0[i][0])
+		writeU16(&buf, uv0[i][1])
+		writeU16(&buf, uv1[i][0])
+		writeU16(&buf, uv1[i][1])
+		buf.Write(make([]byte, 16))
+	}
+
+	for _, tri := range tris {
+		writeU16(&buf, tri[0])
+		writeU16(&buf, tri[1])
+		writeU16(&buf, tri[2])
+	}
+
+	return buf.Bytes()
+}
+
 func writeU16(buf *bytes.Buffer, v uint16) {
 	var b [2]byte
 	b[0] = byte(v)
@@ -151,6 +204,46 @@ func TestParseMeshMultiGroup(t *testing.T) {
 	}
 	if len(m.Triangles) != 2 {
 		t.Fatalf("got %d triangles, want 2", len(m.Triangles))
+	}
+}
+
+// TestParseMeshSniperElite5Layout regression-tests the confirmed Sniper Elite 5 header shape (2
+// float32 offset instead of 3 — see mesh.go's ParseMesh doc comment and buildMeshPayloadSE5):
+// ParseMesh must recognize a payload that doesn't reconcile under the Zombie Army 4 (3-float
+// offset) layout by falling back to this one, and Z must dequantize to exactly 0 (no stored Z
+// offset), not garbage from misaligned bytes.
+func TestParseMeshSniperElite5Layout(t *testing.T) {
+	verts := [][3]uint16{
+		{0, 0, 0},
+		{32767, 0, 0},
+		{0, 32767, 0},
+		{0, 0, 32767},
+	}
+	uv0 := [][2]uint16{{0, 0}, {0, 0}, {0, 0}, {0, 0}}
+	tris := [][3]uint16{{0, 1, 2}, {0, 2, 3}}
+	scale := [3]float32{2.0, -4.0, 0.5}
+	offsetXY := [2]float32{1.0, -2.0}
+	groups := []MeshGroup{{Hash: 0xC0FFEE, IndexCount: 6}}
+	payload := buildMeshPayloadSE5(t, groups, scale, offsetXY, verts, uv0, uv0, tris)
+
+	m, err := ParseMesh("se5_object", payload)
+	if err != nil {
+		t.Fatalf("ParseMesh: %v", err)
+	}
+	if len(m.Vertices) != 4 {
+		t.Fatalf("got %d vertices, want 4", len(m.Vertices))
+	}
+
+	// vertex0: raw (0,0,0) -> every axis dequantizes to its own offset (0 for Z, since none
+	// is stored in this layout).
+	want := [3]float32{offsetXY[0], offsetXY[1], 0}
+	if !vecAlmostEqual(m.Vertices[0].Position, want) {
+		t.Errorf("vertex 0 Position = %v, want %v", m.Vertices[0].Position, want)
+	}
+	// vertex3: raw Z = 32767 (max) -> (32767/32767)*(scale[2]/2)+0 = scale[2]/2.
+	wantZ := scale[2] / 2
+	if !almostEqual(m.Vertices[3].Position[2], wantZ) {
+		t.Errorf("vertex 3 Position.Z = %v, want %v", m.Vertices[3].Position[2], wantZ)
 	}
 }
 

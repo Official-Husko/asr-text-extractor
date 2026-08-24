@@ -186,6 +186,13 @@ func scanPackage(node *treeNode, path string) {
 		}
 		node.children = append(node.children, sub)
 	}
+	if len(pkg.Audio) > 0 {
+		sub := &treeNode{name: fmt.Sprintf("audio (%d)", len(pkg.Audio))}
+		for _, a := range pkg.Audio {
+			sub.children = append(sub.children, &treeNode{name: a.Path})
+		}
+		node.children = append(node.children, sub)
+	}
 }
 
 // scanAsuraContainer dispatches a plain (non-AsuraZbb) "Asura   "-signed file to the right
@@ -252,11 +259,20 @@ func scanRSCF(node *treeNode, raw []byte) {
 		node.children = append(node.children, &treeNode{name: fmt.Sprintf("(RSCF, failed to parse: %v)", err)})
 		return
 	}
-	sub := &treeNode{name: fmt.Sprintf("textures (%d)", len(f.Entries))}
-	for _, e := range f.Entries {
-		sub.children = append(sub.children, &treeNode{name: e.Path})
+	if len(f.Entries) > 0 {
+		sub := &treeNode{name: fmt.Sprintf("textures (%d)", len(f.Entries))}
+		for _, e := range f.Entries {
+			sub.children = append(sub.children, &treeNode{name: e.Path})
+		}
+		node.children = append(node.children, sub)
 	}
-	node.children = append(node.children, sub)
+	if len(f.AudioEntries) > 0 {
+		sub := &treeNode{name: fmt.Sprintf("audio (%d)", len(f.AudioEntries))}
+		for _, e := range f.AudioEntries {
+			sub.children = append(sub.children, &treeNode{name: e.Path})
+		}
+		node.children = append(node.children, sub)
+	}
 }
 
 // scanVoice tries interpreting raw as a DLLN voice file. Finding zero entries isn't an error

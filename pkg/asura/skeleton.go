@@ -44,9 +44,10 @@ type Skeleton struct {
 // at all — the caller (package.go) advances past the whole section using its own declared
 // length regardless of how far this function actually parsed.
 //
-// Layout, ported from a dedicated, independently-authored Zombie Army 4 reverse-engineering
-// project (zombie_army_4_findings-master/ZombieArmy4Loader/chunks/hskn.py, class HSKN) rather
-// than reverse-engineered from scratch: a ChunkHeader (tag, size, version, flags), an unused
+// Layout, informed by prior independent reverse-engineering of this format rather than guessed
+// at from scratch — several fields are gated by a version number and a flags bitfield that
+// would be unsafe to infer blind without real samples across every combination: a ChunkHeader
+// (tag, size, version, flags), an unused
 // uint32, a bone count, a padded name string, then — only if the unused uint32 is non-zero AND
 // bit 6 of flags is clear — a fixed skip (144 bytes for version >= 25, else 72; not exercised
 // by any real sample this was validated against, where the unused field is always 0) — then

@@ -16,12 +16,11 @@ through the end of its payload), 2 more `uint32` fields of unconfirmed meaning, 
 payload's **exact byte length**, a source-asset path in a 4-byte-chunk-aligned string encoding
 (e.g. `\graphics\characters\...\rs16_clothes_ar.tga` — the extension reflects the *original*
 art source, not what gets extracted), and finally the payload itself, read directly via the
-declared length. The resource-type code was cross-checked against independent community
-Asura-format reference decoders (`community_scripts/unpack_rebellion.py`,
-`community_scripts/tools_ZA4.py` — both assertion-verified against real game data): `2` is a
-texture (the only type this tool currently decodes), `0` is a large category this tool doesn't
-touch (see Known limitations), `3` is audio (not seen in the sample used to build this feature,
-not implemented), and `6` is a bare reference to another package with no embedded payload.
+declared length. The resource-type code was cross-checked against independent reference
+implementations of the format: `2` is a texture (the only type this command decodes — see
+[Sound Extraction](Sound-Extraction.md) for type `3`, audio, decoded by the `sound` command
+instead), `0` is a large category this tool doesn't touch here (see Known limitations), and `6`
+is a bare reference to another package with no embedded payload.
 Only type-2 entries whose payload actually starts with the DDS magic are decoded as textures;
 type mismatches and malformed payloads are skipped, not treated as errors, since the declared
 total length keeps the walk in sync with the file regardless — confirmed by walking every one
@@ -105,6 +104,10 @@ ImageMagick (`magick file.dds file.png`), an up-to-date GIMP DDS plugin, or Blen
 loader (which is what matters for actual modding use, and handles it fine).
 
 ## Known limitations
+
+See [games/](games/Zombie-Army-4.md) for per-game verification status — this feature is fully
+confirmed working on every title tested so far (Zombie Army 4, Sniper Elite 5, Sniper Elite
+Resistance).
 
 - 2 of the 5 per-entry header fields (between the total-size field and the resource-type code)
   and the flags field after it aren't fully understood — one of the 2 was hypothesized to flag

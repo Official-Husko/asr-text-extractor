@@ -16,26 +16,51 @@ type TextureEntry struct {
 	Data []byte
 }
 
-// RSCFFile is a parsed RSCF chunk: a flat sequence of texture entries. Unlike HTXT/DLLN/ASTS,
-// RSCF has no single chunk-level header — each entry repeats its own "RSCF" tag, one after
-// another, until a 4-byte zero footer at the end of the file.
+// AudioEntry is a single embedded WAV asset from an RSCF chunk's resource-type-3 entries — the
+// game's own source asset path (e.g. `sounds\hud\duty_roster_collected\..._01.wav`) and its raw
+// bytes, sliced directly from the source file. Data always starts with the standard RIFF/WAVE
+// magic and is a complete, valid, standalone .wav file on its own — confirmed against a real
+// Zombie Army 4 `.pc.sounds` sample (`Chars/mp.pc.pc.sounds`): a plain (uncompressed)
+// `"Asura   "`-signed file whose very first section is RSCF, sharing the exact same per-entry
+// tag+size+type framing `parseRSCFEntry` already decodes for textures/meshes — this is a
+// standalone sibling of a `.pc`'s embedded RSCF section, not a new container format.
+type AudioEntry struct {
+	Path string
+	Data []byte
+}
+
+// RSCFFile is a parsed RSCF chunk: a flat sequence of texture and audio entries. Unlike
+// HTXT/DLLN/ASTS, RSCF has no single chunk-level header — each entry repeats its own "RSCF"
+// tag, one after another, until a 4-byte zero footer at the end of the file.
 type RSCFFile struct {
-	Entries []TextureEntry
+	Entries      []TextureEntry
+	AudioEntries []AudioEntry
 }
 
 // RSCF resource-type codes (the 3rd of an entry's 5 header fields, see parseRSCFEntry) —
-// cross-checked against independent community Asura-format reference decoders
-// (unpack_rebellion.py, tools_ZA4.py — see CLAUDE.md). Type 0 is a large, mixed category: most
-// entries are per-object meshes (see mesh.go), but a couple of real samples are unrelated
-// bulk data blobs ("inst (dynamic)"/"inst (static)", almost certainly a reference into the
-// separate, much larger INST section) that don't decode as a mesh at all — ParseMesh's own
-// size-reconciliation check is what tells the two apart, not the type code alone. Type 3 is
-// audio (not seen in the sample used to build this feature, not implemented). Type 6 is a bare
-// reference to another package with no embedded payload (e.g. a level package's self-reference
-// to its own .pc file).
+// cross-checked against independent reference implementations of the format. Type 0 is a large,
+// mixed category: most entries are per-object meshes (see mesh.go), but real samples also
+// contain two other, unrelated shapes that don't decode as a mesh at all — ParseMesh's own
+// size-reconciliation check is what tells all three apart, not the type code alone:
+//   - All-zero 16-byte stub payloads — placement/marker/proxy objects (GUI prompt anchors,
+//     physics compound proxies, "null_object" gizmo points) that share the mesh resource type
+//     but carry no geometry whatsoever. Common in Sniper Elite 5 (45 of 1,613 resource-type-0
+//     entries in one real DLC package); not seen in Zombie Army 4 samples, but the same
+//     "payload too short for even the fixed header" check that catches these there would catch
+//     an equivalent ZA4 stub too, if one exists.
+//   - Unrelated bulk data blobs named "inst (dynamic)"/"inst (static)" (seen in both Zombie
+//     Army 4 and Sniper Elite 5 samples) and, in Sniper Elite 5 specifically, one further named
+//     "Env" — almost certainly references into a separate, much larger section (`INST`) this
+//     project doesn't parse, not mesh data in a format ParseMesh doesn't yet understand: their
+//     header fields don't remotely reconcile with their actual payload size (one real "inst
+//     (static)" entry's header predicts a payload over 5x larger than what's actually there).
+//
+// Type 3 is audio — see AudioEntry and asAudio. Type 6 is a bare reference to another package
+// with no embedded payload (e.g. a level package's self-reference to its own .pc file).
 const (
 	rscfResourceTypeMesh    = 0
 	rscfResourceTypeTexture = 2
+	rscfResourceTypeAudio   = 3
 )
 
 // ParseRSCF decodes a sequence of RSCF entries from data, which must start with the 8-byte
@@ -82,6 +107,8 @@ func ParseRSCF(data []byte) (*RSCFFile, error) {
 		}
 		if tex := entry.asTexture(); tex != nil {
 			f.Entries = append(f.Entries, *tex)
+		} else if aud := entry.asAudio(); aud != nil {
+			f.AudioEntries = append(f.AudioEntries, *aud)
 		}
 		pos = nextPos
 	}
@@ -142,6 +169,19 @@ func (e *rscfEntry) asTexture() *TextureEntry {
 		return nil
 	}
 	return &TextureEntry{Path: e.path, Data: e.payload}
+}
+
+// asAudio interprets the entry as embedded audio: nil unless its resource-type code is
+// rscfResourceTypeAudio and its payload actually starts with the RIFF magic (the type code
+// alone isn't trusted, mirroring asTexture's own DDS-magic check).
+func (e *rscfEntry) asAudio() *AudioEntry {
+	if e.resType != rscfResourceTypeAudio {
+		return nil
+	}
+	if len(e.payload) < 4 || string(e.payload[:4]) != "RIFF" {
+		return nil
+	}
+	return &AudioEntry{Path: e.path, Data: e.payload}
 }
 
 func allZero(b []byte) bool {
