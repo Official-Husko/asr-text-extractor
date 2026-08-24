@@ -216,27 +216,57 @@ likely this, not something to chase in this project's exporter.
 ### Embedded textures (glTF, the default)
 
 A mesh's `.glb` also gets a real material with its own textures embedded directly in the file
-(no external image files to keep track of), matched by folder-name convention: a mesh named
-"carcano" is matched against textures whose path has "carcano" as an exact folder segment (e.g.
-`\graphics\weapons\rifles\carcano\carcano_body_a.tga`), the same way a real sample's texture
-layout groups an object's maps into its own same-named folder. This is a heuristic, not a
-byte-exact link — a mesh's actual material identifier (`MeshGroup.Hash`) has an unknown hash
-algorithm (see Meshes above), so there's no way to resolve it back to a specific texture
-directly, and folder-name matching is what's available instead.
+(no external image files to keep track of). This is a heuristic, not a byte-exact link — a
+mesh's actual material identifier (`MeshGroup.Hash`) has an unknown hash algorithm (see Meshes
+above), and in real Sniper Elite 5/Resistance samples that field is uniformly zero anyway (not
+populated at all in those titles) — so there's no way to resolve a mesh to its texture directly,
+and name-based matching is what's available instead.
 
-Within a matched folder, a texture's own filename suffix decides its role, going by the naming
-convention found across a real sample's ~3,700 texture paths (`_a`/`_d`/`_albedo`/`_diff` for a
-diffuse/albedo map — 485+ real occurrences of `_a` alone — and `_n`/`_normal`/`_norm`/`_nm` for a
-tangent-space normal map — 708+ occurrences of `_n`). Whichever of those are found get decoded
-and re-encoded as PNG (DDS isn't a valid glTF image format) and embedded as the material's
-`baseColorTexture` and `normalTexture`. A `_m`-suffixed (metallic) map, or a combined/packed map
-like `_albedoroughness`, is deliberately left unmatched — this project doesn't know whether a
-"_m" map is plain grayscale metalness or already packed to glTF's own roughness-in-green/
-metalness-in-blue `metallicRoughnessTexture` convention, and guessing wrong would look worse
-than no metallic/roughness texture at all. Every embedded material instead gets a fixed
-non-metal, medium-rough default (`metallicFactor: 0`, `roughnessFactor: 0.6`) rather than glTF's
-own spec defaults (fully metallic, fully rough with no texture), which render as a near-black
-mirror-like blob in Blender — a plain reasonable guess beats an accurate-looking wrong one here.
+`meshTextures` tries progressively shorter candidate names — the mesh's own base name first,
+then that name with one trailing `_word` segment removed at a time (e.g.
+`german_heavy_truck_door_right` → `german_heavy_truck_door` → `german_heavy_truck`) — against
+two different real texture-organization conventions found across samples from every supported
+title:
+
+- **Folder segment**: a texture whose path has the candidate name as an exact folder component
+  (e.g. `\graphics\weapons\rifles\carcano\carcano_body_a.tga` for a mesh named "carcano") — the
+  original convention this heuristic was built against.
+- **Filename stem**: a texture whose own filename, with its role suffix removed, exactly equals
+  the candidate — found necessary once Sniper Elite 5/Resistance samples were surveyed, where
+  many unrelated objects' maps are lumped into one generically-named folder (e.g.
+  `graphics\pickups\`) and the specific object is identifiable only from the filename itself
+  (e.g. `pickup_crate_explosives_ar.png`).
+
+The progressive trailing-word stripping is what catches the single most common real pattern:
+several distinct sub-part meshes of one larger object (e.g. `german_heavy_truck_door_right`,
+`german_heavy_truck_grill_left`) sharing one parent-object texture set whose own textures use a
+different vocabulary for the specific part (`cab`, `container`, `interior` — never `door` or
+`grill`) — an exact per-part match was never going to exist, but the shared parent identifier
+does. Matching stops at the first (most specific) candidate that finds anything, so it doesn't
+keep stripping and drift onto an unrelated, overly generic identifier once a good match is
+already found. Verified against real Sniper Elite 5/Resistance samples: this raised real
+texture-match coverage (the fraction of exported `.glb` files that get any embedded material at
+all) from under 4% (exact folder match only, the original single-title heuristic) to roughly
+40–50% on real level packages from every title tested, including Zombie Army 4 itself — a large
+fraction of its own props turned out to follow the same generic-folder-plus-filename convention
+the original heuristic never checked for, not just Sniper Elite 5/Resistance's own objects.
+
+Within a matched folder or filename, a texture's own filename suffix decides its role, going by
+the naming convention found across real samples: `_a`/`_d`/`_albedo`/`_diff`/`_diffuse` and
+`_ar`/`_albedoroughness` (a packed albedo+roughness map, Sniper Elite 5/Resistance's own
+dominant color-map suffix — using only its RGB as `baseColorTexture` is safe, since glTF never
+reads that texture's alpha as anything else here) both count as a diffuse/albedo map, and
+`_n`/`_normal`/`_norm`/`_nm` as a tangent-space normal map. Whichever of those are found get
+decoded and re-encoded as PNG (DDS isn't a valid glTF image format) and embedded as the
+material's `baseColorTexture` and `normalTexture`. A `_m`-suffixed (metallic) map is deliberately
+left unmatched — this project doesn't know whether a "_m" map is plain grayscale metalness or
+already packed to glTF's own roughness-in-green/metalness-in-blue `metallicRoughnessTexture`
+convention, and guessing wrong would look worse than no metallic/roughness texture at all
+(unlike `_ar`, where only ever reading the RGB channel carries no such risk). Every embedded
+material instead gets a fixed non-metal, medium-rough default (`metallicFactor: 0`,
+`roughnessFactor: 0.6`) rather than glTF's own spec defaults (fully metallic, fully rough with no
+texture), which render as a near-black mirror-like blob in Blender — a plain reasonable guess
+beats an accurate-looking wrong one here.
 
 When combining LOD/state variants into one file (the default — see below), every variant that
 shares a base name shares one embedded material and image set rather than duplicating the same
@@ -426,12 +456,17 @@ detail.
   effect on any other variant's mesh. Only the exact `<name>_destroyed` naming convention is
   recognized for state variants; other real naming patterns for alternate object states, if any
   exist in other samples, aren't folded in.
-- Texture-to-mesh matching (see Embedded textures above) is a folder-name heuristic, not a
-  confirmed byte-level link — a mesh with no same-named texture folder, or textures that don't
-  follow the `_a`/`_n` suffix convention, gets no embedded material at all. Metallic/roughness
-  maps aren't embedded (channel-packing convention unconfirmed), and the embedded texture is
-  whatever resolution this package itself carries, which for a streamed texture can be a small
-  fallback copy rather than the game's true resolution (see the "On resolution" note above).
+- Texture-to-mesh matching (see Embedded textures above) is a name-based heuristic, not a
+  confirmed byte-level link — a mesh with no related texture folder or filename anywhere in the
+  package, or textures that don't follow the recognized suffix convention, gets no embedded
+  material at all. Verified real coverage on real level packages is roughly 40–50% of exported
+  meshes across every title tested, not 100% — objects whose real textures use a name with no
+  shared word at all (e.g. a mesh named "weldingkit_cylinder_tall_red" whose real texture folder
+  is named "welding_tank_01") are a genuine, expected gap, not a bug. Metallic/roughness maps
+  aren't embedded (channel-packing convention unconfirmed for a plain `_m` suffix), and the
+  embedded texture is whatever resolution this package itself carries, which for a streamed
+  texture can be a small fallback copy rather than the game's true resolution (see the "On
+  resolution" note above).
 - `HSKN`'s own on-disk layout has several fields gated by a version number and a flags bitfield
   that aren't decoded, only skipped past (bone names are the exception — parsed best-effort,
   since they aren't needed for skinning to work but are useful to have). Every real `HSKN`

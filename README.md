@@ -33,29 +33,24 @@ text/voice overrides is also planned (phase 2).
 ## Game support
 
 The container format is shared across Rebellion's Asura-engine titles, but not every chunk type
-has stayed identical between them — some features are confirmed working on one game and
-confirmed *broken* on another.
+has stayed byte-identical between them — some features needed a real, engine-revision-specific
+fix (see the footnotes) before they worked on every tested title.
 
 | Game | Text / Voice | Sound | Texture | Package / Mesh |
 |---|---|---|---|---|
 | Zombie Army 4 | ✅ | ✅ | ✅ | ✅ |
-| Sniper Elite 5 | ✅ | ⚠️ ¹ | ✅ | ✅ ² |
-| Sniper Elite Resistance | ✅ | ⚠️ ¹ ³ | ✅ | ✅ ² |
-| Sniper Elite 4 | ❔ ⁴ | ❔ ⁴ | ❔ ⁴ | ❔ ⁴ |
+| Sniper Elite 5 | ✅ | ✅ | ✅ | ✅ ¹ |
+| Sniper Elite Resistance | ✅ | ✅ | ✅ | ✅ ¹ |
+| Sniper Elite 4 | ❔ ² | ❔ ² | ❔ ² | ❔ ² |
 
-¹ Streamsounds (`ASTS`) audio extraction is confirmed broken on this title (an out-of-range
-offset in a real sample); the alternate RSCF-based `.pc.sounds` audio archive format is
-confirmed working and is the reliable option here.
-² Needed a real, confirmed engine-revision-specific fix to work: this title's mesh format uses a
+¹ Needed a real, confirmed engine-revision-specific fix to work: this title's mesh format uses a
 2-float position offset instead of Zombie Army 4's 3-float one. `ParseMesh` now detects and
 handles both automatically — see the wiki for the byte-level derivation.
-³ Not independently tested against this specific title; based on directly testing Sniper Elite
-5, given how closely the two titles' asset data matches.
-⁴ No installation has been available to test against during development. Text/voice support is
+² No installation has been available to test against during development. Text/voice support is
 inherited from this project's original format sources (themselves built for Sniper Elite 4) but
 never independently confirmed; every other feature is completely untested for this title.
 
-See the wiki's **[per-game pages](wiki/Home.md#games)** for the full detail behind every ✅/⚠️/❔
+See the wiki's **[per-game pages](wiki/Home.md#games)** for the full detail behind every ✅/❔
 above — what was actually tested, real error messages, and sample files used.
 
 ## Quick start

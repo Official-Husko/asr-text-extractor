@@ -86,9 +86,11 @@ func TestScanFindsHTXTStringsByHashAndSymbolName(t *testing.T) {
 	}
 
 	root := &treeNode{name: "dir"}
-	if err := scanInto(root, dir); err != nil {
+	sc := newScanner()
+	if err := scanInto(sc, root, dir); err != nil {
 		t.Fatalf("scanInto: %v", err)
 	}
+	sc.wait()
 
 	var buf bytes.Buffer
 	if err := writeTree(&buf, root); err != nil {
@@ -127,9 +129,11 @@ func TestScanRecursesIntoSubdirectories(t *testing.T) {
 	}
 
 	root := &treeNode{name: "dir"}
-	if err := scanInto(root, dir); err != nil {
+	sc := newScanner()
+	if err := scanInto(sc, root, dir); err != nil {
 		t.Fatalf("scanInto: %v", err)
 	}
+	sc.wait()
 
 	var buf bytes.Buffer
 	if err := writeTree(&buf, root); err != nil {

@@ -14,11 +14,12 @@ a Resistance sample specifically — that distinction is called out per row.
 |---|---|
 | `text` (unpack) | ✅ Verified working directly — real `HTXT` files (e.g. `text/pc/collectibles_dlc/COLLECTIBLES_DLC.asr_en`, 200 entries; `text/pc/credits/credits.asr_en`, 11 entries). |
 | `voice` (unpack) | ⚠️ Not independently tested against Resistance. Presumed to behave like Sniper Elite 5 (same caveat: not confirmed against a sample known to contain voice lines). |
-| `sound` — streamsounds manifest (`ASTS`) | ⚠️ Not independently tested against Resistance. [Sniper Elite 5](Sniper-Elite-5.md) is confirmed broken for this container; Resistance almost certainly shares the same manifest layout, but this hasn't been directly verified with a Resistance sample. |
+| `sound` — streamsounds manifest (`ASTS`) | ✅ **Verified directly against a full real Resistance install** — see [Sniper Elite 5](Sniper-Elite-5.md#streamsounds-asts-extraction-the-fix). Of all 448 real `.streamsounds` files, 425 extract directly; the other 23 are reference-only `.ssm` companion manifests, each with a working sibling `.asr.*.streamsounds` file carrying the same real audio — 100% of embedded audio in the install is reachable. |
 | `sound` — RSCF audio archive (`.pc.sounds`) | ⚠️ Not independently tested against Resistance. Works on Sniper Elite 5; presumed to work here too given the shared asset format. |
 | `texture` (`.pc_textures` archives, and via `package unpack`) | ✅ Verified working directly — 1,680 real textures extracted from `envs/3d_frontend/m_3d_frontend.pc`. |
 | `package` — sub-file/texture extraction | ✅ Verified working directly. |
 | `package` — mesh decoding | ✅ **Fixed**, directly verified: after the fix described in [Sniper Elite 5](Sniper-Elite-5.md#mesh-decoding-the-fix) (was `Meshes: 0`, confirmed broken), a real level package (`envs/dlc_clearing/m_dlc_clearing.pc`) now decodes real geometry — including objects that are byte-identical to Sniper Elite 5's own (e.g. `german_heavy_truck_door_right`), consistent with the two titles' shared asset data. |
+| `package` — embedded mesh textures/materials | ✅ **Fixed**, directly verified: after the same fix described in [Sniper Elite 5](Sniper-Elite-5.md#embedded-texturesmaterials-the-fix), the same real level package embeds a real material into 234/339 (69.0%) of exported `.glb` files — even higher coverage than the Sniper Elite 5 sample checked. |
 | `scan` | ✅ Runs correctly. |
 | `.mod` sub-file | 🔍 Structurally near-identical to Sniper Elite 5's own richer format (see `research/mod.md`) — same mesh+`"FXPT"`-marker shape, not implemented in Go yet. |
 

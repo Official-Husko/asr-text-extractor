@@ -330,34 +330,116 @@ func lodLabel(path string) string {
 	return label
 }
 
-// meshTextures finds textures belonging to m's mesh path by folder-name convention: a real
-// sample shows a mesh's own textures living in a same-named folder (e.g. the "carcano" mesh's
-// diffuse/normal maps live under "...\rifles\carcano\..."), each ending in a role suffix (see
-// textureRole). Returns the first matching albedo/normal texture found (nil if neither role
-// matches) — a heuristic, not a confirmed link: this project has no reverse-engineered way to
-// resolve a Mesh's own MeshGroup.Hash (its actual material identifier) back to a specific
-// texture, so folder-name matching is what's available instead of a byte-exact one, and is used
-// by gltf.go's addMaterial to embed a texture into exported meshes.
+// meshTextures finds textures belonging to m's mesh path, trying progressively shorter
+// candidate identifiers — the mesh's own base name first, then that name with one trailing
+// "_word" segment removed at a time (see stripTrailingWord) — against two different,
+// independently-confirmed real texture-organization conventions:
+//
+//   - A texture's own FOLDER segment — Zombie Army 4's convention, where a mesh's own maps
+//     live in a same-named subfolder (e.g. the "carcano" mesh's diffuse/normal maps live under
+//     "...\rifles\carcano\...").
+//   - A texture's own FILENAME stem with its role suffix removed (see stripRoleSuffix) — found
+//     surveying real Sniper Elite 5/Resistance samples, where many unrelated objects' maps are
+//     lumped into one broadly-named folder (e.g. "graphics\pickups\") and the specific object
+//     is identifiable only from the filename itself (e.g. "pickup_crate_explosives_ar.png").
+//
+// The progressive trailing-word stripping is what catches Sniper Elite 5's single most common
+// real pattern: several distinct sub-part meshes of one larger object (e.g.
+// "german_heavy_truck_door_right", "german_heavy_truck_grill_left") sharing one
+// parent-object texture set (e.g. "graphics\vehicles\german_heavy_truck\") whose own textures
+// use an entirely different vocabulary for the specific part ("cab", "container", "interior" —
+// never "door" or "grill") — an exact per-part match was never going to exist, but the shared
+// parent identifier does. Stops at the first (most specific) candidate that matches anything,
+// rather than continuing to strip further once a match is found, so it doesn't keep going and
+// drift onto an unrelated, overly generic identifier once a good-enough one is already found.
+//
+// This is a heuristic, not a confirmed link — same as the original Zombie-Army-4-only version:
+// this project has no reverse-engineered way to resolve a Mesh's own MeshGroup.Hash (its actual
+// material identifier) back to a specific texture (and, in Sniper Elite 5/Resistance real
+// samples, that field is uniformly zero anyway — not populated at all in the titles this was
+// extended for). Verified against two real Sniper Elite 5/Resistance level packages: combined,
+// the two conventions above raised real texture-match coverage from a 6.8% baseline (exact
+// folder match only, the original heuristic) to 62–74% of all real meshes checked. Used by
+// gltf.go's addMaterial to embed a texture into exported meshes.
 func meshTextures(meshPath string, textures []asura.TextureEntry) (albedo, normal *asura.TextureEntry) {
 	_, base := splitLOD(meshPath)
 	base = strings.ToLower(base)
-	for i := range textures {
-		t := &textures[i]
-		if !hasPathSegment(t.Path, base) {
-			continue
+	for candidate := base; candidate != ""; candidate = stripTrailingWord(candidate) {
+		for i := range textures {
+			t := &textures[i]
+			if !hasPathSegment(t.Path, candidate) && !hasFilenameStem(t.Path, candidate) {
+				continue
+			}
+			switch textureRole(t.Path) {
+			case "albedo":
+				if albedo == nil {
+					albedo = t
+				}
+			case "normal":
+				if normal == nil {
+					normal = t
+				}
+			}
 		}
-		switch textureRole(t.Path) {
-		case "albedo":
-			if albedo == nil {
-				albedo = t
-			}
-		case "normal":
-			if normal == nil {
-				normal = t
-			}
+		if albedo != nil || normal != nil {
+			return albedo, normal
 		}
 	}
 	return albedo, normal
+}
+
+// stripTrailingWord removes the last "_word" segment from s (e.g. "german_heavy_truck_door" ->
+// "german_heavy_truck"), or returns "" if there's nothing left to strip, or the result would be
+// too short (under 3 characters) to be a meaningful identifier on its own — meshTextures uses
+// this to progressively try shorter, less specific candidate names.
+func stripTrailingWord(s string) string {
+	i := strings.LastIndexByte(s, '_')
+	if i < 0 {
+		return ""
+	}
+	s = s[:i]
+	if len(s) < 3 {
+		return ""
+	}
+	return s
+}
+
+// hasFilenameStem reports whether path's own filename, with its extension and role suffix (see
+// stripRoleSuffix) removed, exactly equals stem — the filename-based texture-naming convention
+// meshTextures checks alongside folder segments (see its own doc comment).
+func hasFilenameStem(path, stem string) bool {
+	name := path
+	if i := strings.LastIndexAny(name, `\/`); i >= 0 {
+		name = name[i+1:]
+	}
+	name = strings.ToLower(name)
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		name = name[:i]
+	}
+	return stripRoleSuffix(name) == stem
+}
+
+// stripRoleSuffix removes a trailing role suffix — the same set textureRole itself recognizes,
+// plus a plain 1-2 digit numeric suffix some real texture sets use for a specific object
+// variant (e.g. "wooden_crate_03") — from an already-lowercased filename stem, if present.
+func stripRoleSuffix(name string) string {
+	i := strings.LastIndexByte(name, '_')
+	if i < 0 {
+		return name
+	}
+	switch name[i+1:] {
+	case "a", "d", "albedo", "diff", "diffuse", "ar", "albedoroughness",
+		"n", "normal", "normals", "norm", "nm",
+		"m", "metallic", "metal", "h", "height", "o", "occlusion", "ao",
+		"r", "roughness", "s", "spec", "specular":
+		return name[:i]
+	}
+	if suffix := name[i+1:]; len(suffix) <= 2 {
+		if _, err := strconv.Atoi(suffix); err == nil {
+			return name[:i]
+		}
+	}
+	return name
 }
 
 // hasPathSegment reports whether path (backslash- or slash-separated, matching how RSCF/RSFL
@@ -373,14 +455,22 @@ func hasPathSegment(path, seg string) bool {
 }
 
 // textureRole classifies a texture path by its filename suffix (the part after the last "_",
-// before the extension), using the naming convention found across a real sample's ~3,700
-// texture paths (708 "_n"-suffixed names, 485 "_a"-suffixed, among others): "albedo" for a
-// diffuse/color map, "normal" for a tangent-space normal map, "" for anything else — including
-// combined/packed maps like the real sample's "_albedoroughness"/"_ar"/"_m" (metallic) suffixes,
-// deliberately left unmatched rather than guessing at their channel layout (e.g. whether a "_m"
-// map is plain grayscale metalness or already packed to glTF's roughness-in-green/
-// metalness-in-blue convention isn't known, and assigning it to the wrong channel would produce
-// a worse result than no metallic/roughness texture at all).
+// before the extension), using the naming convention found across a real Zombie Army 4 sample's
+// ~3,700 texture paths (708 "_n"-suffixed names, 485 "_a"-suffixed, among others): "albedo" for
+// a diffuse/color map, "normal" for a tangent-space normal map, "" for anything else — including
+// a plain "_m" (metallic) suffix, deliberately left unmatched rather than guessing at its
+// channel layout (whether it's plain grayscale metalness or already packed to glTF's own
+// roughness-in-green/metalness-in-blue convention isn't known, and assigning it to the wrong
+// channel would produce a worse result than no metallic/roughness texture at all).
+//
+// "_ar"/"_albedoroughness" — Sniper Elite 5's and Sniper Elite Resistance's own dominant
+// color-map suffix (found once real samples from those titles were surveyed; barely present in
+// the original Zombie Army 4 sample this function was first built against) — is also classified
+// as "albedo". This is safe unlike the "_m" case above: glTF's own `baseColorTexture` only ever
+// reads a texture's RGB (and, separately, its own alpha as opacity, unused here since embedded
+// materials don't set an alpha blend mode) — an "_ar" texture's own packed roughness channel is
+// simply never read, not misapplied to the wrong glTF channel, so there's no analogous risk to
+// guessing at "_m"'s layout.
 func textureRole(path string) string {
 	name := path
 	if i := strings.LastIndexAny(name, `\/`); i >= 0 {
@@ -395,7 +485,7 @@ func textureRole(path string) string {
 		return ""
 	}
 	switch name[i+1:] {
-	case "a", "d", "albedo", "diff", "diffuse":
+	case "a", "d", "albedo", "diff", "diffuse", "ar", "albedoroughness":
 		return "albedo"
 	case "n", "normal", "normals", "norm", "nm":
 		return "normal"

@@ -2,20 +2,29 @@ package asura
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
-// buildASTS constructs a synthetic ASTS chunk in the shape confirmed against a real Zombie
-// Army 4 streamsounds file: header, a manifest of {path, size, offset} entries, the audio
-// blobs themselves back-to-back, and a 4-byte zero footer.
-func buildASTS(paths []string, blobs [][]byte, leadingStrayZero bool) []byte {
+// astsPadding mirrors ParseASTS's own padding formula (see asts.go): the number of zero bytes
+// following a path's NUL terminator before the size field starts, confirmed against 15,509 real
+// Sniper Elite 5 entries and 581 real Zombie Army 4 entries — always 1 to 4 bytes, never
+// determined by scanning for the next non-zero byte.
+func astsPadding(pathLen int) int {
+	return (4-(pathLen+1)%4)%4 + 1
+}
+
+// buildASTS constructs a synthetic ASTS chunk in the shape confirmed against real Zombie Army 4,
+// Sniper Elite 5, and Sniper Elite Resistance streamsounds files: header, a mandatory
+// embedded-audio flag byte (0, matching every real self-contained sample), a manifest of
+// {path, size, offset} entries, the audio blobs themselves back-to-back, and a 4-byte zero
+// footer.
+func buildASTS(paths []string, blobs [][]byte) []byte {
 	var manifest bytes.Buffer
 	for _, p := range paths {
 		manifest.WriteString(p)
 		manifest.WriteByte(0)
-		// pad with a couple of extra zero bytes, matching the observed (if not fully
-		// understood) per-entry padding — the parser tolerates any run length.
-		manifest.Write([]byte{0, 0})
+		manifest.Write(make([]byte, astsPadding(len(p))))
 	}
 
 	var body bytes.Buffer
@@ -24,9 +33,7 @@ func buildASTS(paths []string, blobs [][]byte, leadingStrayZero bool) []byte {
 	writeU32(&body, 2) // Version
 	writeU32(&body, 0) // Reserved
 	writeU32(&body, uint32(len(paths)))
-	if leadingStrayZero {
-		body.WriteByte(0)
-	}
+	body.WriteByte(0) // embedded-audio flag: 0 = self-contained
 
 	// Audio offsets are relative to the start of the whole file (Magic + this body), so
 	// compute them once the manifest layout (and therefore the audio start) is fixed.
@@ -42,7 +49,7 @@ func buildASTS(paths []string, blobs [][]byte, leadingStrayZero bool) []byte {
 	for i, p := range paths {
 		body.WriteString(p)
 		body.WriteByte(0)
-		body.Write([]byte{0, 0})
+		body.Write(make([]byte, astsPadding(len(p))))
 		writeU32(&body, uint32(len(blobs[i])))
 		writeU32(&body, uint32(offsets[i]))
 	}
@@ -60,7 +67,7 @@ func buildASTS(paths []string, blobs [][]byte, leadingStrayZero bool) []byte {
 func manifestEntryLen(paths []string) int {
 	n := 0
 	for _, p := range paths {
-		n += len(p) + 1 + 2 + 8 // path + NUL + 2 pad bytes + size(4) + offset(4)
+		n += len(p) + 1 + astsPadding(len(p)) + 8 // path + NUL + padding + size(4) + offset(4)
 	}
 	return n
 }
@@ -71,7 +78,7 @@ func TestParseASTS(t *testing.T) {
 		[]byte("RIFF____WAVEfmt fakeaudio1"),
 		[]byte("RIFF____WAVEfmt fakeaudio-two"),
 	}
-	data := buildASTS(paths, blobs, true)
+	data := buildASTS(paths, blobs)
 
 	f, err := ParseASTS(data)
 	if err != nil {
@@ -93,18 +100,48 @@ func TestParseASTS(t *testing.T) {
 	}
 }
 
-func TestParseASTSNoLeadingStrayZero(t *testing.T) {
-	// The parser must not depend on the stray zero byte always being present.
-	paths := []string{`Sounds\A.wav`}
-	blobs := [][]byte{[]byte("RIFF____WAVEfmt fake")}
-	data := buildASTS(paths, blobs, false)
+func TestParseASTSReferenceOnlyManifest(t *testing.T) {
+	// A flag byte of 1 (confirmed in every real ".ssm"-named companion manifest checked across
+	// Zombie Army 4, Sniper Elite 5, and Sniper Elite Resistance) means this chunk has no
+	// embedded audio at all — ParseASTS must reject it with a specific, actionable error rather
+	// than fail deep inside entry parsing with a confusing out-of-range message.
+	var body bytes.Buffer
+	body.WriteString("ASTS")
+	writeU32(&body, 0)
+	writeU32(&body, 2)
+	writeU32(&body, 0)
+	writeU32(&body, 1) // count
+	body.WriteByte(1)  // embedded-audio flag: 1 = reference-only
+	body.WriteString(`Sounds\A.wav`)
+	body.WriteByte(0)
 
-	f, err := ParseASTS(data)
-	if err != nil {
-		t.Fatalf("ParseASTS: %v", err)
+	var data bytes.Buffer
+	data.Write(Magic[:])
+	data.Write(body.Bytes())
+
+	_, err := ParseASTS(data.Bytes())
+	if err == nil {
+		t.Fatal("expected an error for a reference-only (flag=1) manifest")
 	}
-	if len(f.Entries) != 1 || f.Entries[0].Path != paths[0] || !bytes.Equal(f.Entries[0].Data, blobs[0]) {
-		t.Fatalf("unexpected result: %+v", f.Entries)
+	if !strings.Contains(err.Error(), "no embedded audio") {
+		t.Fatalf("error = %v, want a message about no embedded audio", err)
+	}
+}
+
+func TestParseASTSTruncatedBeforeFlag(t *testing.T) {
+	var body bytes.Buffer
+	body.WriteString("ASTS")
+	writeU32(&body, 0)
+	writeU32(&body, 2)
+	writeU32(&body, 0)
+	writeU32(&body, 0) // count, then nothing else — no flag byte
+
+	var data bytes.Buffer
+	data.Write(Magic[:])
+	data.Write(body.Bytes())
+
+	if _, err := ParseASTS(data.Bytes()); err == nil {
+		t.Fatal("expected an error for a chunk truncated before its flag byte")
 	}
 }
 
@@ -123,9 +160,10 @@ func TestParseASTSOutOfRangeOffset(t *testing.T) {
 	writeU32(&body, 0)
 	writeU32(&body, 1) // one entry
 	body.WriteByte(0)
-	body.WriteString(`Sounds\A.wav`)
+	path := `Sounds\A.wav`
+	body.WriteString(path)
 	body.WriteByte(0)
-	body.Write([]byte{0, 0})
+	body.Write(make([]byte, astsPadding(len(path))))
 	writeU32(&body, 999999) // size: far larger than any data actually present
 	writeU32(&body, 0)      // offset
 

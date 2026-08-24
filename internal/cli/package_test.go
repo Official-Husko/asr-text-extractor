@@ -34,8 +34,9 @@ func TestTextureRole(t *testing.T) {
 	}{
 		{`\graphics\weapons\rifles\carcano\carcano_body_a.tga`, "albedo"},
 		{`\graphics\weapons\rifles\carcano\carcano_body_n.tga`, "normal"},
-		{`\graphics\weapons\rifles\carcano\carcano_body_m.tga`, ""},          // metallic: deliberately unmatched, see doc comment
-		{`\graphics\props\light_albedoroughness.tga`, ""},                   // packed map: deliberately unmatched
+		{`\graphics\weapons\rifles\carcano\carcano_body_m.tga`, ""}, // metallic: deliberately unmatched, see doc comment
+		{`\graphics\props\light_albedoroughness.tga`, "albedo"},    // packed albedo+roughness: safe to use as baseColorTexture, see doc comment
+		{`\graphics\props\light_ar.tga`, "albedo"},                 // same convention, short form (Sniper Elite 5/Resistance's dominant suffix)
 		{`\graphics\characters\skin_diffuse.tga`, "albedo"},
 		{`\graphics\characters\skin_normals.tga`, "normal"},
 		{`noextension`, ""},
@@ -86,6 +87,76 @@ func TestMeshTexturesRequiresExactPathSegment(t *testing.T) {
 	albedo, normal := meshTextures("carcano", textures)
 	if albedo != nil || normal != nil {
 		t.Errorf("matched (%v, %v) via substring, want an exact path-segment match only", albedo, normal)
+	}
+}
+
+// TestMeshTexturesFallsBackToSharedParentFolder regression-tests the Sniper Elite 5/Resistance
+// pattern found by direct survey: several sub-part meshes of one larger object (no exact folder
+// or filename match of their own) share one parent-object texture set whose own filenames use a
+// different vocabulary for the specific part. meshTextures must find the shared parent by
+// progressively stripping trailing "_word" segments off the mesh's own name.
+func TestMeshTexturesFallsBackToSharedParentFolder(t *testing.T) {
+	textures := []asura.TextureEntry{
+		{Path: `graphics\vehicles\german_heavy_truck\german_heavy_truck_cab_ar.png`},
+		{Path: `graphics\vehicles\german_heavy_truck\german_heavy_truck_cab_n.png`},
+		{Path: `graphics\vehicles\german_heavy_truck2\german_heavy_truck2_cab_ar.png`}, // unrelated, must not match
+	}
+
+	albedo, normal := meshTextures("german_heavy_truck_door_right", textures)
+	if albedo == nil || albedo.Path != `graphics\vehicles\german_heavy_truck\german_heavy_truck_cab_ar.png` {
+		t.Errorf("albedo = %v, want the shared parent folder's own albedo texture", albedo)
+	}
+	if normal == nil || normal.Path != `graphics\vehicles\german_heavy_truck\german_heavy_truck_cab_n.png` {
+		t.Errorf("normal = %v, want the shared parent folder's own normal texture", normal)
+	}
+}
+
+// TestMeshTexturesMatchesByFilenameStem regression-tests the other Sniper Elite 5/Resistance
+// pattern found by survey: some objects have no per-object subfolder at all, only a
+// generically-named one (e.g. "graphics\pickups\"), with the specific object identifiable only
+// from each texture's own filename (role suffix stripped).
+func TestMeshTexturesMatchesByFilenameStem(t *testing.T) {
+	textures := []asura.TextureEntry{
+		{Path: `graphics\pickups\pickup_crate_ar.png`},
+		{Path: `graphics\pickups\pickup_crate_n.png`},
+		{Path: `graphics\pickups\other_pickup_ar.png`}, // unrelated, must not match
+	}
+
+	albedo, normal := meshTextures("pickup_crate", textures)
+	if albedo == nil || albedo.Path != `graphics\pickups\pickup_crate_ar.png` {
+		t.Errorf("albedo = %v, want pickup_crate_ar via filename-stem match", albedo)
+	}
+	if normal == nil || normal.Path != `graphics\pickups\pickup_crate_n.png` {
+		t.Errorf("normal = %v, want pickup_crate_n via filename-stem match", normal)
+	}
+}
+
+// TestMeshTexturesStopsAtFirstMatchingCandidate makes sure the progressive trailing-word
+// stripping stops as soon as it finds a real match, rather than continuing to strip further and
+// potentially drifting onto an unrelated, overly generic identifier that also happens to match.
+func TestMeshTexturesStopsAtFirstMatchingCandidate(t *testing.T) {
+	textures := []asura.TextureEntry{
+		{Path: `graphics\props\widget_small_ar.png`},  // matches the full, specific name
+		{Path: `graphics\props\widget_unrelated.png`}, // would match the over-stripped "widget" alone
+	}
+	albedo, _ := meshTextures("widget_small", textures)
+	if albedo == nil || albedo.Path != `graphics\props\widget_small_ar.png` {
+		t.Errorf("albedo = %v, want the most specific match (widget_small), not a further-stripped one", albedo)
+	}
+}
+
+func TestStripTrailingWord(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"german_heavy_truck_door_right", "german_heavy_truck_door"},
+		{"german_heavy_truck", "german_heavy"},
+		{"ab_cd", ""}, // stripping "cd" leaves "ab", too short (< 3 chars)
+		{"abc", ""},   // no underscore to strip
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := stripTrailingWord(c.in); got != c.want {
+			t.Errorf("stripTrailingWord(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
